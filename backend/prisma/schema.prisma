@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(uuid())
+  phone     String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  profile   Profile?
+  sent      Message[] @relation("sent_messages")
+  received  Message[] @relation("received_messages")
+
+  @@map("users")
+}
+
+model Profile {
+  id          String   @id @default(uuid())
+  userId      String   @unique @map("user_id")
+  displayName String   @map("display_name")
+  age         Int
+  gender      String
+  bio         String?
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  lastActive  DateTime? @map("last_active")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
+}
+
+model Message {
+  id          String    @id @default(uuid())
+  senderId    String    @map("sender_id")
+  recipientId String    @map("recipient_id")
+  content     String?
+  type        String    @default("text")
+  mediaUrl    String?   @map("media_url")
+  readAt      DateTime? @map("read_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  sender    User @relation("sent_messages", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient User @relation("received_messages", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([senderId, recipientId, createdAt(sort: Desc)])
+  @@map("messages")
+}
