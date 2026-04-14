@@ -109,10 +109,12 @@ async function tryRefreshToken() {
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, auth = false, _retryAfterRefresh = false } = options;
   const token = useAuthStore.getState().accessToken;
+  const hasJsonBody = body !== undefined && body !== null;
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
+  const headers: Record<string, string> = {};
+  if (hasJsonBody) {
+    headers['Content-Type'] = 'application/json';
+  }
 
   if (auth && token) {
     headers.Authorization = `Bearer ${token}`;
@@ -121,7 +123,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
     headers,
-    body: body ? JSON.stringify(body) : undefined,
+    body: hasJsonBody ? JSON.stringify(body) : undefined,
   });
 
   const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
