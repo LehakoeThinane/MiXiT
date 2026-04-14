@@ -8,10 +8,12 @@ import matchingRoutes from './modules/matching/routes.js';
 import messagingRoutes from './modules/messaging/routes.js';
 import paymentRoutes from './modules/payments/routes.js';
 import profileRoutes from './modules/profiles/routes.js';
+import roomsRoutes from './modules/rooms/routes.js';
 import { redis } from './shared/cache/redis.js';
 import { env } from './shared/config/env.js';
 import { prisma } from './shared/db/prisma.js';
 import { requestIdMiddleware } from './shared/middleware/request-id.js';
+import { initSocketServer } from './shared/realtime/socket.js';
 
 export function buildApp() {
   const app = Fastify({
@@ -42,7 +44,12 @@ export function buildApp() {
   app.register(profileRoutes, { prefix: '/profiles' });
   app.register(matchingRoutes, { prefix: '/matching' });
   app.register(messagingRoutes, { prefix: '/messaging' });
+  app.register(roomsRoutes, { prefix: '/rooms' });
   app.register(paymentRoutes, { prefix: '/payments' });
+  app.register((instance, _opts, done) => {
+    initSocketServer(instance);
+    done();
+  });
 
   app.addHook('onClose', async () => {
     await prisma.$disconnect();

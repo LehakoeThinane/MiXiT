@@ -1,6 +1,14 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { getSocketServer } from '../../shared/realtime/socket.js';
+
+type SendMessageBody = {
+  recipientId: string;
+  content?: string;
+  type?: 'text' | 'voice' | 'image';
+  mediaUrl?: string;
+};
 
 function formatPreview(type: string, content: string | null) {
   if (type === 'voice') return 'Voice note';
@@ -61,6 +69,83 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     return { ok: true, conversations };
+  });
+
+  fastify.get<{
+    Params: { peerUserId: string };
+    Querystring: { limit?: string };
+  }>('/thread/:peerUserId', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const currentUserId = req.user.sub;
+    const peerUserId = req.params.peerUserId;
+
+    if (!peerUserId) {
+      return reply.code(400).send({ ok: false, message: 'Missing peer user id' });
+    }
+
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 100);
+    const messages = await prisma.message.findMany({
+      where: {
+        OR: [
+          { senderId: currentUserId, recipientId: peerUserId },
+          { senderId: peerUserId, recipientId: currentUserId },
+        ],
+      },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    });
+
+    return {
+      ok: true,
+      messages: messages.map((message) => ({
+        id: message.id,
+        senderId: message.senderId,
+        recipientId: message.recipientId,
+        content: message.content,
+        type: message.type,
+        mediaUrl: message.mediaUrl,
+        createdAt: message.createdAt.toISOString(),
+      })),
+    };
+  });
+
+  fastify.post<{
+    Body: SendMessageBody;
+  }>('/messages', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const senderId = req.user.sub;
+    const { recipientId, content, type = 'text', mediaUrl } = req.body;
+
+    if (!recipientId || recipientId === senderId) {
+      return reply.code(400).send({ ok: false, message: 'Invalid recipient' });
+    }
+    if (!content && !mediaUrl) {
+      return reply.code(400).send({ ok: false, message: 'Message content is required' });
+    }
+
+    const message = await prisma.message.create({
+      data: {
+        senderId,
+        recipientId,
+        content: content ?? null,
+        mediaUrl: mediaUrl ?? null,
+        type,
+      },
+    });
+
+    const payload = {
+      id: message.id,
+      senderId: message.senderId,
+      recipientId: message.recipientId,
+      content: message.content,
+      type: message.type,
+      mediaUrl: message.mediaUrl,
+      createdAt: message.createdAt.toISOString(),
+    };
+
+    const io = getSocketServer();
+    io?.to(`user:${recipientId}`).emit('message:received', payload);
+    io?.to(`user:${senderId}`).emit('message:sent', payload);
+
+    return { ok: true, message: payload };
   });
 };
 

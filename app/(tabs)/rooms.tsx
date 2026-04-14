@@ -1,43 +1,88 @@
-import { Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ActivityIndicator, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
-const rooms = [
-  { id: '1', emoji: '🎵', title: 'Amapiano Lovers', meta: '847 active • JHB', joined: false },
-  { id: '2', emoji: '💼', title: 'Young Hustlers', meta: '1.2k active • JHB', joined: false },
-  { id: '3', emoji: '☕', title: 'Soweto Cafe Scene', meta: '234 active • 2km', joined: false },
-  { id: '4', emoji: '☀️', title: 'Sunset Singles', meta: '511 active • 4km', joined: true },
-];
+import { getRooms, joinRoom, leaveRoom } from '@/lib/rooms-api';
+import { useAuthStore } from '@/stores/auth-store';
+
+function formatMeta(memberCount: number, city: string) {
+  const members = memberCount >= 1000 ? `${(memberCount / 1000).toFixed(1)}k` : String(memberCount);
+  return `${members} active • ${city}`;
+}
 
 export default function RoomsScreen() {
+  const queryClient = useQueryClient();
+  const isAuthenticated = useAuthStore((state) => Boolean(state.accessToken));
+
+  const roomsQuery = useQuery({
+    queryKey: ['rooms'],
+    queryFn: getRooms,
+    enabled: isAuthenticated,
+    staleTime: 30_000,
+  });
+
+  const toggleMembershipMutation = useMutation({
+    mutationFn: async ({ roomId, joined }: { roomId: string; joined: boolean }) => {
+      if (joined) {
+        await leaveRoom(roomId);
+      } else {
+        await joinRoom(roomId);
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['rooms'] });
+    },
+  });
+
+  const rooms = roomsQuery.data ?? [];
+
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.title}>Rooms</Text>
       <Text style={styles.subtitle}>Find your people</Text>
-      <View style={styles.infoBanner}>
-        <Text style={styles.infoText}>Room list is styled preview data while we wire live rooms.</Text>
-      </View>
 
       <View style={styles.searchBar}>
         <Text style={styles.searchText}>🔎 Search rooms...</Text>
       </View>
 
-      <View style={styles.list}>
-        {rooms.map((room) => (
-          <View key={room.id} style={styles.roomCard}>
-            <View style={styles.emojiBubble}>
-              <Text style={styles.emoji}>{room.emoji}</Text>
+      {!isAuthenticated ? (
+        <View style={styles.stateCard}>
+          <Text style={styles.stateTitle}>Sign in to explore rooms</Text>
+        </View>
+      ) : roomsQuery.isLoading ? (
+        <View style={styles.stateCard}>
+          <ActivityIndicator />
+          <Text style={styles.stateBody}>Loading rooms...</Text>
+        </View>
+      ) : roomsQuery.isError ? (
+        <View style={styles.stateCard}>
+          <Text style={styles.stateTitle}>Couldn’t load rooms</Text>
+          <Pressable style={styles.retryBtn} onPress={() => roomsQuery.refetch()}>
+            <Text style={styles.retryBtnText}>Retry</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <View style={styles.list}>
+          {rooms.map((room) => (
+            <View key={room.id} style={styles.roomCard}>
+              <View style={styles.emojiBubble}>
+                <Text style={styles.emoji}>{room.emoji}</Text>
+              </View>
+              <View style={styles.roomTextWrap}>
+                <Text style={styles.roomTitle}>{room.name}</Text>
+                <Text style={styles.roomMeta}>• {formatMeta(room.memberCount, room.city)}</Text>
+              </View>
+              <Pressable
+                disabled={toggleMembershipMutation.isPending}
+                style={[styles.roomAction, room.joined && styles.roomActionJoined]}
+                onPress={() => toggleMembershipMutation.mutate({ roomId: room.id, joined: room.joined })}>
+                <Text style={[styles.roomActionText, room.joined && styles.roomActionTextJoined]}>
+                  {room.joined ? 'Joined' : 'Join'}
+                </Text>
+              </Pressable>
             </View>
-            <View style={styles.roomTextWrap}>
-              <Text style={styles.roomTitle}>{room.title}</Text>
-              <Text style={styles.roomMeta}>• {room.meta}</Text>
-            </View>
-            <Pressable style={[styles.roomAction, room.joined && styles.roomActionJoined]}>
-              <Text style={[styles.roomActionText, room.joined && styles.roomActionTextJoined]}>
-                {room.joined ? 'Joined' : 'Join'}
-              </Text>
-            </Pressable>
-          </View>
-        ))}
-      </View>
+          ))}
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -60,19 +105,39 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     fontSize: 16,
   },
-  infoBanner: {
-    borderRadius: 12,
+  stateCard: {
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#29304b',
     backgroundColor: '#141a2c',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    marginBottom: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    marginBottom: 12,
+    alignItems: 'center',
+    gap: 8,
   },
-  infoText: {
+  stateTitle: {
+    color: '#edf0ff',
+    fontSize: 18,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  stateBody: {
     color: '#9ca5c8',
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
+    textAlign: 'center',
+  },
+  retryBtn: {
+    backgroundColor: '#ff6b35',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  retryBtnText: {
+    color: '#111524',
+    fontWeight: '700',
+    fontSize: 14,
   },
   searchBar: {
     borderRadius: 14,

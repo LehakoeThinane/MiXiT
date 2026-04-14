@@ -23,6 +23,11 @@ type VibesResponse = {
   vibes: DiscoverCandidate[];
 };
 
+type SendVibeResponse = {
+  ok: boolean;
+  matched: boolean;
+};
+
 export async function getDiscoverCandidates() {
   const response = await apiRequest<CandidatesResponse>('/matching/candidates', {
     auth: true,
@@ -35,4 +40,13 @@ export async function getReceivedVibes() {
     auth: true,
   });
   return response.vibes;
+}
+
+export async function sendVibe(toUserId: string) {
+  const response = await apiRequest<SendVibeResponse>('/matching/vibe', {
+    method: 'POST',
+    auth: true,
+    body: { toUserId },
+  });
+  return response;
 }

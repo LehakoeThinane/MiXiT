@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
@@ -8,12 +9,15 @@ datasource db {
 }
 
 model User {
-  id        String    @id @default(uuid())
-  phone     String    @unique
-  createdAt DateTime  @default(now()) @map("created_at")
-  profile   Profile?
-  sent      Message[] @relation("sent_messages")
-  received  Message[] @relation("received_messages")
+  id             String           @id @default(uuid())
+  phone          String           @unique
+  createdAt      DateTime         @default(now()) @map("created_at")
+  profile        Profile?
+  sent           Message[]        @relation("sent_messages")
+  received       Message[]        @relation("received_messages")
+  sentVibes      Vibe[]           @relation("vibe_sender")
+  receivedVibes  Vibe[]           @relation("vibe_recipient")
+  roomMembership RoomMembership[]
 
   @@map("users")
 }
@@ -48,4 +52,47 @@ model Message {
 
   @@index([senderId, recipientId, createdAt(sort: Desc)])
   @@map("messages")
+}
+
+model Vibe {
+  id         String    @id @default(uuid())
+  fromUserId String    @map("from_user_id")
+  toUserId   String    @map("to_user_id")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  matchedAt  DateTime? @map("matched_at")
+
+  fromUser User @relation("vibe_sender", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User @relation("vibe_recipient", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
+  @@index([toUserId, createdAt(sort: Desc)])
+  @@map("vibes")
+}
+
+model Room {
+  id          String           @id @default(uuid())
+  slug        String           @unique
+  name        String
+  description String?
+  city        String?
+  emoji       String?
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  memberships RoomMembership[]
+
+  @@map("rooms")
+}
+
+model RoomMembership {
+  id        String   @id @default(uuid())
+  roomId    String   @map("room_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("room_memberships")
 }

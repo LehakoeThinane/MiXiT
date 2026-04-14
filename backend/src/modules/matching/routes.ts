@@ -48,10 +48,19 @@ function mapProfileToDiscoverCard(
 
 const matchingRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/candidates', { preHandler: [fastify.authenticate] }, async (req) => {
+    const currentUserId = req.user.sub;
+
+    const mySentVibes = await prisma.vibe.findMany({
+      where: { fromUserId: currentUserId },
+      select: { toUserId: true },
+    });
+    const excludedUserIds = new Set<string>(mySentVibes.map((item) => item.toUserId));
+    excludedUserIds.add(currentUserId);
+
     const profiles = await prisma.profile.findMany({
       where: {
         userId: {
-          not: req.user.sub,
+          notIn: Array.from(excludedUserIds),
         },
       },
       orderBy: { updatedAt: 'desc' },
@@ -65,18 +74,92 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
     return { ok: true, candidates };
   });
 
-  fastify.get('/vibes', { preHandler: [fastify.authenticate] }, async (req) => {
-    const profiles = await prisma.profile.findMany({
+  fastify.post<{
+    Body: { toUserId: string };
+  }>('/vibe', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const fromUserId = req.user.sub;
+    const { toUserId } = req.body;
+
+    if (!toUserId || typeof toUserId !== 'string') {
+      return reply.code(400).send({ ok: false, message: 'Invalid recipient' });
+    }
+    if (toUserId === fromUserId) {
+      return reply.code(400).send({ ok: false, message: 'Cannot vibe yourself' });
+    }
+
+    const targetUser = await prisma.user.findUnique({ where: { id: toUserId }, select: { id: true } });
+    if (!targetUser) {
+      return reply.code(404).send({ ok: false, message: 'User not found' });
+    }
+
+    await prisma.vibe.upsert({
       where: {
-        userId: {
-          not: req.user.sub,
+        fromUserId_toUserId: {
+          fromUserId,
+          toUserId,
         },
       },
-      orderBy: [{ lastActive: 'desc' }, { updatedAt: 'desc' }],
+      create: { fromUserId, toUserId },
+      update: {},
+    });
+
+    const reverseVibe = await prisma.vibe.findUnique({
+      where: {
+        fromUserId_toUserId: {
+          fromUserId: toUserId,
+          toUserId: fromUserId,
+        },
+      },
+    });
+
+    let matched = false;
+    if (reverseVibe) {
+      matched = true;
+      const now = new Date();
+      await prisma.vibe.updateMany({
+        where: {
+          OR: [
+            { fromUserId, toUserId },
+            { fromUserId: toUserId, toUserId: fromUserId },
+          ],
+        },
+        data: { matchedAt: now },
+      });
+    }
+
+    return { ok: true, matched };
+  });
+
+  fastify.get('/vibes', { preHandler: [fastify.authenticate] }, async (req) => {
+    const currentUserId = req.user.sub;
+
+    const incomingVibes = await prisma.vibe.findMany({
+      where: { toUserId: currentUserId },
+      include: {
+        fromUser: {
+          include: { profile: true },
+        },
+      },
+      orderBy: [{ matchedAt: 'desc' }, { createdAt: 'desc' }],
       take: 20,
     });
 
-    const vibes = profiles.map((profile, index) => mapProfileToDiscoverCard(profile, index, 'Near you'));
+    const vibes = incomingVibes
+      .filter((item) => item.fromUser.profile)
+      .map((item, index) =>
+        mapProfileToDiscoverCard(
+          {
+            userId: item.fromUserId,
+            displayName: item.fromUser.profile?.displayName ?? item.fromUser.phone,
+            age: item.fromUser.profile?.age ?? 25,
+            bio: item.fromUser.profile?.bio ?? null,
+            lastActive: item.fromUser.profile?.lastActive ?? null,
+          },
+          index,
+          'Near you'
+        )
+      );
+
     return { ok: true, vibes };
   });
 };

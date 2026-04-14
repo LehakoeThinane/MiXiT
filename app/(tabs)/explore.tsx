@@ -1,10 +1,10 @@
 import { FlashList } from '@shopify/flash-list';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
-import { type DiscoverCandidate, getDiscoverCandidates } from '@/lib/matching-api';
+import { type DiscoverCandidate, getDiscoverCandidates, sendVibe } from '@/lib/matching-api';
 import { useAuthStore } from '@/stores/auth-store';
 
 function Waveform({ active }: { active: boolean }) {
@@ -87,6 +87,7 @@ function ProfileCard({
 
 export default function DiscoverScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [matchProfile, setMatchProfile] = useState<DiscoverCandidate | null>(null);
   const isAuthenticated = useAuthStore((state) => Boolean(state.accessToken));
@@ -99,6 +100,22 @@ export default function DiscoverScreen() {
   });
 
   const profiles = candidatesQuery.data ?? [];
+  const vibeMutation = useMutation({
+    mutationFn: async (profile: DiscoverCandidate) => sendVibe(profile.id),
+    onSuccess: async (result, profile) => {
+      await queryClient.invalidateQueries({ queryKey: ['discover-candidates'] });
+      await queryClient.invalidateQueries({ queryKey: ['vibes'] });
+      if (result.matched) {
+        setMatchProfile(profile);
+        return;
+      }
+      Alert.alert('Vibe sent', `You vibed ${profile.name}.`);
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : 'Could not send vibe';
+      Alert.alert('Vibe failed', message);
+    },
+  });
 
   return (
     <SafeAreaView style={styles.container}>
@@ -143,7 +160,10 @@ export default function DiscoverScreen() {
               profile={item}
               isPlaying={playingId === item.id}
               onTogglePlay={() => setPlayingId((prev) => (prev === item.id ? null : item.id))}
-              onVibe={() => setMatchProfile(item)}
+              onVibe={() => {
+                if (vibeMutation.isPending) return;
+                vibeMutation.mutate(item);
+              }}
               onChat={() =>
                 router.push({
                   pathname: '/chat/[id]',
