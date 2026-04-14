@@ -1,0 +1,48 @@
+services:
+  - type: keyvalue
+    name: mixit-redis
+    plan: starter
+    region: frankfurt
+    ipAllowList: []
+
+  - type: web
+    name: mixit-api
+    runtime: node
+    plan: starter
+    region: frankfurt
+    rootDir: backend
+    autoDeploy: true
+    healthCheckPath: /health
+    buildCommand: corepack enable && corepack pnpm install --frozen-lockfile && corepack pnpm run prisma:generate && corepack pnpm run build
+    preDeployCommand: corepack pnpm exec prisma migrate deploy
+    startCommand: corepack pnpm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: CORS_ORIGIN
+        value: "*"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_TTL
+        value: 15m
+      - key: JWT_REFRESH_TTL
+        value: 30d
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mixit-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: mixit-redis
+          property: connectionString
+
+databases:
+  - name: mixit-db
+    region: frankfurt
+    plan: basic-256mb
+    databaseName: mixit
+    user: mixit
+    ipAllowList: []

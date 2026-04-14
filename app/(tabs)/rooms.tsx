@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ActivityIndicator, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
-import { getRooms, joinRoom, leaveRoom } from '@/lib/rooms-api';
+import { getRooms, joinRoom, leaveRoom, type RoomItem } from '@/lib/rooms-api';
 import { useAuthStore } from '@/stores/auth-store';
 
 function formatMeta(memberCount: number, city: string) {
@@ -12,6 +13,7 @@ function formatMeta(memberCount: number, city: string) {
 export default function RoomsScreen() {
   const queryClient = useQueryClient();
   const isAuthenticated = useAuthStore((state) => Boolean(state.accessToken));
+  const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
 
   const roomsQuery = useQuery({
     queryKey: ['rooms'],
@@ -28,7 +30,34 @@ export default function RoomsScreen() {
         await joinRoom(roomId);
       }
     },
-    onSuccess: async () => {
+    onMutate: async ({ roomId, joined }) => {
+      setPendingRoomId(roomId);
+      await queryClient.cancelQueries({ queryKey: ['rooms'] });
+      const previousRooms = queryClient.getQueryData<RoomItem[]>(['rooms']);
+
+      queryClient.setQueryData<RoomItem[]>(['rooms'], (current) => {
+        if (!current) return current;
+        return current.map((room) => {
+          if (room.id !== roomId) return room;
+          return {
+            ...room,
+            joined: !joined,
+            memberCount: Math.max(0, room.memberCount + (joined ? -1 : 1)),
+          };
+        });
+      });
+
+      return { previousRooms };
+    },
+    onError: (error, _variables, context) => {
+      if (context?.previousRooms) {
+        queryClient.setQueryData(['rooms'], context.previousRooms);
+      }
+      const message = error instanceof Error ? error.message : 'Could not update room';
+      Alert.alert('Room update failed', message);
+    },
+    onSettled: async () => {
+      setPendingRoomId(null);
       await queryClient.invalidateQueries({ queryKey: ['rooms'] });
     },
   });
@@ -72,8 +101,13 @@ export default function RoomsScreen() {
                 <Text style={styles.roomMeta}>• {formatMeta(room.memberCount, room.city)}</Text>
               </View>
               <Pressable
-                disabled={toggleMembershipMutation.isPending}
-                style={[styles.roomAction, room.joined && styles.roomActionJoined]}
+                disabled={Boolean(pendingRoomId && pendingRoomId === room.id)}
+                style={[
+                  styles.roomAction,
+                  room.joined && styles.roomActionJoined,
+                  pendingRoomId === room.id && styles.roomActionDisabled,
+                ]}
+                hitSlop={8}
                 onPress={() => toggleMembershipMutation.mutate({ roomId: room.id, joined: room.joined })}>
                 <Text style={[styles.roomActionText, room.joined && styles.roomActionTextJoined]}>
                   {room.joined ? 'Joined' : 'Join'}
@@ -209,5 +243,8 @@ const styles = StyleSheet.create({
   },
   roomActionTextJoined: {
     color: '#ff6b35',
+  },
+  roomActionDisabled: {
+    opacity: 0.65,
   },
 });

@@ -41,6 +41,16 @@ const VIBE_OPTIONS = [
 
 const clampStep = (value: number) => Math.max(1, Math.min(7, value)) as Step;
 
+function parseInterestsFromBio(bio?: string | null) {
+  if (!bio) return [];
+  return bio
+    .replace(/^Into\s+/i, '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
 function resolveErrorMessage(error: unknown) {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
@@ -111,6 +121,8 @@ export default function ProfileTabScreen() {
   const hasVoiceClip = recordSeconds > 0 && !isRecording;
   const [stepError, setStepError] = useState<string | null>(null);
   const [showSessionRestoredBanner, setShowSessionRestoredBanner] = useState(false);
+  const [showCompletionStep, setShowCompletionStep] = useState(false);
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
 
   const sessionQuery = useQuery({
     queryKey: ['session-me'],
@@ -187,15 +199,7 @@ export default function ProfileTabScreen() {
     setDisplayName(profile.displayName ?? '');
     setAge(profile.age ?? 24);
     setGender((profile.gender as Gender) ?? 'female');
-    if (profile.bio) {
-      const fromBio = profile.bio
-        .replace(/^Into\s+/i, '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (fromBio.length > 0) setSelectedVibes(fromBio.slice(0, 8));
-    }
-    setStep(7);
+    setSelectedVibes(parseInterestsFromBio(profile.bio));
   }, [profileQuery.data]);
 
   const requestOtpMutation = useMutation({
@@ -255,6 +259,8 @@ export default function ProfileTabScreen() {
     onSuccess: async () => {
       setStepError(null);
       await queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
+      setIsEditingProfile(false);
+      setShowCompletionStep(true);
       setStep(7);
     },
     onError: (error) => {
@@ -266,6 +272,9 @@ export default function ProfileTabScreen() {
 
   const canProceedStep3 = displayName.trim().length >= 2;
   const canProceedStep5 = selectedVibes.length >= 3;
+  const canSaveProfile = displayName.trim().length >= 2 && selectedVibes.length >= 1;
+  const hasExistingProfile = Boolean(profileQuery.data);
+  const shouldShowProfileHome = isAuthenticated && hasExistingProfile && !showCompletionStep;
 
   const toggleVibe = (vibe: string) => {
     setSelectedVibes((prev) => {
@@ -291,6 +300,17 @@ export default function ProfileTabScreen() {
     } catch {
       // handled by mutation onError
     }
+  };
+
+  const handleLogout = () => {
+    clearSession();
+    setStep(1);
+    setPhone('');
+    setOtpCode('');
+    setOtpVerified(false);
+    setStepError(null);
+    setShowCompletionStep(false);
+    setIsEditingProfile(false);
   };
 
   const stopRecording = () => {
@@ -365,6 +385,147 @@ export default function ProfileTabScreen() {
         <ActivityIndicator />
         <Text style={styles.restoringText}>Restoring your MiXiT session...</Text>
       </View>
+    );
+  }
+
+  if (shouldShowProfileHome) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <KeyboardAvoidingView
+          style={styles.flex}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 78 : 0}>
+          <ScrollView
+            contentContainerStyle={styles.content}
+            keyboardShouldPersistTaps="handled"
+            automaticallyAdjustKeyboardInsets>
+            <Text style={styles.profileTitle}>Profile</Text>
+            <Text style={styles.profileSubtitle}>Manage your MiXiT details</Text>
+            {showSessionRestoredBanner ? (
+              <View style={styles.sessionBanner}>
+                <Text style={styles.sessionBannerText}>Session restored. Welcome back.</Text>
+              </View>
+            ) : null}
+
+            <View style={styles.profileCard}>
+              <View style={styles.profileAvatar}>
+                <Text style={styles.profileAvatarText}>{displayName.slice(0, 1).toUpperCase() || 'M'}</Text>
+              </View>
+              <Text style={styles.profileName}>{displayName}</Text>
+              <Text style={styles.profilePhone}>{user?.phone ?? ''}</Text>
+              <View style={styles.profileMetaRow}>
+                <View style={styles.profileMetaPill}>
+                  <Text style={styles.profileMetaText}>{age} years</Text>
+                </View>
+                <View style={styles.profileMetaPill}>
+                  <Text style={styles.profileMetaText}>{gender}</Text>
+                </View>
+              </View>
+            </View>
+
+            {isEditingProfile ? (
+              <View style={styles.stepBlock}>
+                <Text style={styles.label}>Display Name</Text>
+                <TextInput
+                  value={displayName}
+                  onChangeText={setDisplayName}
+                  placeholder="What people call you?"
+                  placeholderTextColor="#8d90a6"
+                  style={styles.input}
+                />
+
+                <Text style={styles.label}>Age: {age}</Text>
+                <Slider
+                  minimumValue={18}
+                  maximumValue={80}
+                  step={1}
+                  value={age}
+                  minimumTrackTintColor="#ff6b35"
+                  maximumTrackTintColor="#303754"
+                  thumbTintColor="#ff6b35"
+                  onValueChange={(value) => setAge(value)}
+                />
+
+                <Text style={styles.label}>Gender</Text>
+                <View style={styles.genderRow}>
+                  {(['male', 'female', 'non-binary'] as Gender[]).map((option) => {
+                    const active = gender === option;
+                    return (
+                      <Pressable
+                        key={option}
+                        style={[styles.pill, active && styles.pillActive]}
+                        onPress={() => setGender(option)}>
+                        <Text style={[styles.pillText, active && styles.pillTextActive]}>{option}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <Text style={styles.label}>Interests</Text>
+                <View style={styles.vibeGrid}>
+                  {VIBE_OPTIONS.map((vibe) => {
+                    const active = selectedVibes.includes(vibe);
+                    return (
+                      <Pressable
+                        key={vibe}
+                        style={[styles.vibeChip, active && styles.vibeChipActive]}
+                        onPress={() => toggleVibe(vibe)}>
+                        <Text style={[styles.vibeChipText, active && styles.vibeChipTextActive]}>{vibe}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <Text style={styles.counterText}>{selectedVibes.length} selected</Text>
+
+                <Pressable
+                  style={[styles.button, (!canSaveProfile || saveProfileMutation.isPending) && styles.buttonDisabled]}
+                  disabled={!canSaveProfile || saveProfileMutation.isPending}
+                  onPress={() => saveProfileMutation.mutate()}>
+                  <Text style={styles.buttonText}>
+                    {saveProfileMutation.isPending ? 'Saving...' : 'Save profile'}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.button, styles.secondaryButton]}
+                  onPress={() => {
+                    setIsEditingProfile(false);
+                    const currentProfile = profileQuery.data;
+                    if (currentProfile) {
+                      setDisplayName(currentProfile.displayName ?? '');
+                      setAge(currentProfile.age ?? 24);
+                      setGender((currentProfile.gender as Gender) ?? 'female');
+                      setSelectedVibes(parseInterestsFromBio(currentProfile.bio));
+                    }
+                  }}>
+                  <Text style={styles.secondaryButtonText}>Cancel</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={styles.stepBlock}>
+                <Text style={styles.label}>Interests</Text>
+                <View style={styles.vibeGrid}>
+                  {selectedVibes.length > 0 ? (
+                    selectedVibes.map((vibe) => (
+                      <View key={vibe} style={[styles.vibeChip, styles.vibeChipActive]}>
+                        <Text style={[styles.vibeChipText, styles.vibeChipTextActive]}>{vibe}</Text>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.counterText}>No interests yet</Text>
+                  )}
+                </View>
+                <Pressable style={styles.button} onPress={() => setIsEditingProfile(true)}>
+                  <Text style={styles.buttonText}>Edit profile</Text>
+                </Pressable>
+              </View>
+            )}
+
+            <Pressable style={[styles.button, styles.secondaryButton]} onPress={handleLogout}>
+              <Text style={styles.secondaryButtonText}>Log out</Text>
+            </Pressable>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
     );
   }
 
@@ -562,19 +723,15 @@ export default function ProfileTabScreen() {
                 </View>
                 <Text style={styles.doneTitle}>You are all set</Text>
                 <Text style={styles.doneBody}>Profile completed. Start discovering people now.</Text>
-                <Pressable style={styles.button} onPress={() => router.replace('/(tabs)/discover')}>
+                <Pressable
+                  style={styles.button}
+                  onPress={() => {
+                    setShowCompletionStep(false);
+                    router.replace('/(tabs)/discover');
+                  }}>
                   <Text style={styles.buttonText}>Start discovering</Text>
                 </Pressable>
-                <Pressable
-                  style={[styles.button, styles.secondaryButton]}
-                  onPress={() => {
-                    clearSession();
-                    setStep(1);
-                    setPhone('');
-                    setOtpCode('');
-                    setOtpVerified(false);
-                    setStepError(null);
-                  }}>
+                <Pressable style={[styles.button, styles.secondaryButton]} onPress={handleLogout}>
                   <Text style={styles.secondaryButtonText}>Log out</Text>
                 </Pressable>
               </View>
@@ -660,11 +817,74 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 2,
   },
+  profileTitle: {
+    color: '#f7f8ff',
+    fontSize: 34,
+    fontWeight: '700',
+  },
+  profileSubtitle: {
+    color: '#98a1c7',
+    fontSize: 16,
+    marginTop: 4,
+    marginBottom: 10,
+  },
   caption: {
     color: '#8c94b8',
     marginTop: 4,
     marginBottom: 8,
     fontSize: 13,
+  },
+  profileCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#252d49',
+    backgroundColor: '#141a2c',
+    padding: 16,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  profileAvatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#ff6b35',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  profileAvatarText: {
+    color: '#10131d',
+    fontSize: 30,
+    fontWeight: '700',
+  },
+  profileName: {
+    color: '#f7f8ff',
+    fontSize: 28,
+    fontWeight: '700',
+  },
+  profilePhone: {
+    color: '#a8b0d0',
+    marginTop: 4,
+    marginBottom: 8,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  profileMetaRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  profileMetaPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#2a3148',
+    backgroundColor: '#1a1f2e',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  profileMetaText: {
+    color: '#d9dcf2',
+    fontSize: 14,
+    fontWeight: '600',
   },
   sessionBanner: {
     marginBottom: 10,
