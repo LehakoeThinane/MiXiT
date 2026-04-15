@@ -12,11 +12,13 @@ declare module '@fastify/jwt' {
       sub: string;
       phone: string;
       type: 'access' | 'refresh';
+      sid?: string;
     };
     user: {
       sub: string;
       phone: string;
       type: 'access' | 'refresh';
+      sid?: string;
       iat?: number;
       exp?: number;
     };

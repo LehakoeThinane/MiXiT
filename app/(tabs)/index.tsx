@@ -22,7 +22,7 @@ import { getCurrentUser, requestOtp, verifyOtp } from '@/lib/auth-api';
 import { getMyProfile, upsertMyProfile } from '@/lib/profile-api';
 import { useAuthStore } from '@/stores/auth-store';
 
-type Gender = 'male' | 'female' | 'non-binary';
+type Gender = 'male' | 'female' | 'homesexual';
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 const NAME_SUGGESTIONS = ['Lerato', 'Thandi', 'Lehakoe', 'Anele', 'Kagiso'];
@@ -49,6 +49,16 @@ function parseInterestsFromBio(bio?: string | null) {
     .map((s) => s.trim())
     .filter(Boolean)
     .slice(0, 8);
+}
+
+function parseInterests(profile: { interests?: string[] | null; bio?: string | null }) {
+  if (Array.isArray(profile.interests)) {
+    return profile.interests
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 12);
+  }
+  return parseInterestsFromBio(profile.bio);
 }
 
 function resolveErrorMessage(error: unknown) {
@@ -199,7 +209,7 @@ export default function ProfileTabScreen() {
     setDisplayName(profile.displayName ?? '');
     setAge(profile.age ?? 24);
     setGender((profile.gender as Gender) ?? 'female');
-    setSelectedVibes(parseInterestsFromBio(profile.bio));
+    setSelectedVibes(parseInterests(profile));
   }, [profileQuery.data]);
 
   const requestOtpMutation = useMutation({
@@ -255,6 +265,7 @@ export default function ProfileTabScreen() {
         age,
         gender,
         bio: selectedVibes.length ? `Into ${selectedVibes.join(', ')}` : 'MiXiT user',
+        interests: selectedVibes,
       }),
     onSuccess: async () => {
       setStepError(null);
@@ -272,7 +283,7 @@ export default function ProfileTabScreen() {
 
   const canProceedStep3 = displayName.trim().length >= 2;
   const canProceedStep5 = selectedVibes.length >= 3;
-  const canSaveProfile = displayName.trim().length >= 2 && selectedVibes.length >= 1;
+  const canSaveProfile = displayName.trim().length >= 2 && selectedVibes.length >= 3;
   const hasExistingProfile = Boolean(profileQuery.data);
   const shouldShowProfileHome = isAuthenticated && hasExistingProfile && !showCompletionStep;
 
@@ -448,7 +459,7 @@ export default function ProfileTabScreen() {
 
                 <Text style={styles.label}>Gender</Text>
                 <View style={styles.genderRow}>
-                  {(['male', 'female', 'non-binary'] as Gender[]).map((option) => {
+                  {(['male', 'female', 'homesexual'] as Gender[]).map((option) => {
                     const active = gender === option;
                     return (
                       <Pressable
@@ -494,7 +505,7 @@ export default function ProfileTabScreen() {
                       setDisplayName(currentProfile.displayName ?? '');
                       setAge(currentProfile.age ?? 24);
                       setGender((currentProfile.gender as Gender) ?? 'female');
-                      setSelectedVibes(parseInterestsFromBio(currentProfile.bio));
+                      setSelectedVibes(parseInterests(currentProfile));
                     }
                   }}>
                   <Text style={styles.secondaryButtonText}>Cancel</Text>
@@ -630,7 +641,7 @@ export default function ProfileTabScreen() {
               <View style={styles.stepBlock}>
                 <Text style={styles.label}>Gender</Text>
                 <View style={styles.genderRow}>
-                  {(['male', 'female', 'non-binary'] as Gender[]).map((option) => {
+                  {(['male', 'female', 'homesexual'] as Gender[]).map((option) => {
                     const active = gender === option;
                     return (
                       <Pressable

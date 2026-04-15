@@ -5,8 +5,16 @@ export type Profile = {
   userId: string;
   displayName: string;
   age: number;
-  gender: 'male' | 'female' | 'non-binary';
+  gender: 'male' | 'female' | 'homesexual';
   bio?: string | null;
+  city?: string | null;
+  locationLat?: number | null;
+  locationLng?: number | null;
+  interests?: string[] | null;
+  photos?: string[] | null;
+  voiceIntroUrl?: string | null;
+  voiceIntroDurationSec?: number | null;
+  completedAt?: string | null;
   updatedAt: string;
   lastActive?: string | null;
 };
@@ -31,8 +39,15 @@ export async function getMyProfile() {
 export async function upsertMyProfile(input: {
   displayName: string;
   age: number;
-  gender: 'male' | 'female' | 'non-binary';
+  gender: 'male' | 'female' | 'homesexual';
   bio?: string;
+  city?: string;
+  locationLat?: number;
+  locationLng?: number;
+  interests?: string[];
+  photos?: string[];
+  voiceIntroUrl?: string;
+  voiceIntroDurationSec?: number;
 }) {
   const response = await apiRequest<ProfileResponse>('/profiles/me', {
     method: 'PUT',

@@ -5,6 +5,8 @@ import { ensureRedisConnection, redis } from '../../shared/cache/redis.js';
 import { env } from '../../shared/config/env.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { logger } from '../../shared/utils/logger.js';
+import { getSmsSender } from './sms-provider.js';
+import { hashToken, issueTokenPair, rotateRefreshToken } from './token-service.js';
 
 type RequestOtpBody = {
   phone: string;
@@ -19,6 +21,10 @@ type RefreshBody = {
   refreshToken: string;
 };
 
+type LogoutBody = {
+  refreshToken: string;
+};
+
 function normalizePhone(input: string) {
   return input.replace(/\s+/g, '').trim();
 }
@@ -28,15 +34,28 @@ function isValidPhone(phone: string) {
 }
 
 function otpKey(phone: string) {
-  return `otp:${phone}`;
+  return `otp:code:${phone}`;
 }
 
 function otpRateKey(phone: string) {
   return `otp:rate:${phone}`;
 }
 
+function otpCooldownKey(phone: string) {
+  return `otp:cooldown:${phone}`;
+}
+
+function otpAttemptsKey(phone: string) {
+  return `otp:attempts:${phone}`;
+}
+
 function generateOtp() {
   return randomInt(100000, 1000000).toString();
+}
+
+function resolveUserAgent(input: string | string[] | undefined) {
+  if (Array.isArray(input)) return input[0] ?? null;
+  return input ?? null;
 }
 
 const requestOtpSchema = {
@@ -70,29 +89,65 @@ const refreshSchema = {
   },
 } as const;
 
+const logoutSchema = {
+  body: {
+    type: 'object',
+    required: ['refreshToken'],
+    properties: {
+      refreshToken: { type: 'string', minLength: 16 },
+    },
+  },
+} as const;
+
 const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: RequestOtpBody }>(
     '/request-otp',
     { schema: requestOtpSchema },
     async (req, reply) => {
       await ensureRedisConnection();
+      let smsSender: ReturnType<typeof getSmsSender>;
+      try {
+        smsSender = getSmsSender();
+      } catch (error) {
+        logger.error('SMS sender setup failed', error);
+        return reply.code(500).send({ ok: false, message: 'SMS provider is not configured' });
+      }
 
       const phone = normalizePhone(req.body.phone);
       if (!isValidPhone(phone)) {
         return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
       }
+      const cooldownKey = otpCooldownKey(phone);
+      const cooldownRemaining = await redis.ttl(cooldownKey);
+      if (cooldownRemaining > 0) {
+        return reply.code(429).send({
+          ok: false,
+          message: `Please wait ${cooldownRemaining}s before requesting another code.`,
+        });
+      }
 
       const rateKey = otpRateKey(phone);
       const requestCount = await redis.incr(rateKey);
       if (requestCount === 1) {
-        await redis.expire(rateKey, 60);
+        await redis.expire(rateKey, env.otpRequestWindowSeconds);
       }
-      if (requestCount > 3) {
+      if (requestCount > env.otpMaxRequestsPerWindow) {
         return reply.code(429).send({ ok: false, message: 'Too many OTP requests. Try again soon.' });
       }
 
       const code = generateOtp();
-      await redis.setex(otpKey(phone), 300, code);
+      await redis.setex(otpKey(phone), env.otpTtlSeconds, code);
+      await redis.del(otpAttemptsKey(phone));
+      await redis.setex(cooldownKey, env.otpResendCooldownSeconds, '1');
+
+      try {
+        await smsSender.sendOtp(phone, code);
+      } catch (error) {
+        await redis.del(otpKey(phone));
+        await redis.del(cooldownKey);
+        logger.error('Failed to send OTP', error);
+        return reply.code(502).send({ ok: false, message: 'Failed to send OTP. Please try again.' });
+      }
 
       logger.info('OTP generated', { phone });
 
@@ -118,11 +173,29 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const stored = await redis.get(otpKey(phone));
-      if (!stored || stored !== code) {
+      if (!stored) {
+        return reply.code(401).send({ ok: false, message: 'Invalid or expired OTP' });
+      }
+
+      const attemptsKey = otpAttemptsKey(phone);
+      const attemptCount = await redis.incr(attemptsKey);
+      if (attemptCount === 1) {
+        await redis.expire(attemptsKey, env.otpTtlSeconds);
+      }
+      if (attemptCount > env.otpMaxVerifyAttempts) {
+        await redis.del(otpKey(phone));
+        await redis.del(attemptsKey);
+        await redis.del(otpCooldownKey(phone));
+        return reply.code(429).send({ ok: false, message: 'Too many attempts. Request a new OTP.' });
+      }
+
+      if (stored !== code) {
         return reply.code(401).send({ ok: false, message: 'Invalid or expired OTP' });
       }
 
       await redis.del(otpKey(phone));
+      await redis.del(attemptsKey);
+      await redis.del(otpCooldownKey(phone));
 
       const user = await prisma.user.upsert({
         where: { phone },
@@ -130,14 +203,10 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         create: { phone },
       });
 
-      const accessToken = await reply.jwtSign(
-        { sub: user.id, phone: user.phone, type: 'access' },
-        { expiresIn: env.jwtAccessTtl }
-      );
-      const refreshToken = await reply.jwtSign(
-        { sub: user.id, phone: user.phone, type: 'refresh' },
-        { expiresIn: env.jwtRefreshTtl }
-      );
+      const tokens = await issueTokenPair(reply, user, {
+        userAgent: resolveUserAgent(req.headers['user-agent']),
+        ipAddress: req.ip ?? null,
+      });
 
       return {
         ok: true,
@@ -145,12 +214,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
           id: user.id,
           phone: user.phone,
         },
-        tokens: {
-          accessToken,
-          refreshToken,
-          tokenType: 'Bearer',
-          expiresIn: env.jwtAccessTtl,
-        },
+        tokens,
       };
     }
   );
@@ -176,9 +240,10 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
           sub: string;
           phone: string;
           type: 'access' | 'refresh';
+          sid?: string;
         }>(req.body.refreshToken);
 
-        if (payload.type !== 'refresh') {
+        if (payload.type !== 'refresh' || !payload.sid) {
           return reply.code(401).send({ ok: false, message: 'Invalid refresh token' });
         }
 
@@ -187,14 +252,10 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
           return reply.code(401).send({ ok: false, message: 'User not found' });
         }
 
-        const accessToken = await reply.jwtSign(
-          { sub: user.id, phone: user.phone, type: 'access' },
-          { expiresIn: env.jwtAccessTtl }
-        );
-        const refreshToken = await reply.jwtSign(
-          { sub: user.id, phone: user.phone, type: 'refresh' },
-          { expiresIn: env.jwtRefreshTtl }
-        );
+        const tokens = await rotateRefreshToken(reply, user, payload.sid, req.body.refreshToken, {
+          userAgent: resolveUserAgent(req.headers['user-agent']),
+          ipAddress: req.ip ?? null,
+        });
 
         return {
           ok: true,
@@ -202,15 +263,44 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
             id: user.id,
             phone: user.phone,
           },
-          tokens: {
-            accessToken,
-            refreshToken,
-            tokenType: 'Bearer',
-            expiresIn: env.jwtAccessTtl,
-          },
+          tokens,
         };
       } catch {
         return reply.code(401).send({ ok: false, message: 'Refresh token expired' });
+      }
+    }
+  );
+
+  fastify.post<{ Body: LogoutBody }>(
+    '/logout',
+    { schema: logoutSchema },
+    async (req, reply) => {
+      try {
+        const payload = await fastify.jwt.verify<{
+          sub: string;
+          type: 'access' | 'refresh';
+          sid?: string;
+        }>(req.body.refreshToken);
+
+        if (payload.type !== 'refresh' || !payload.sid) {
+          return reply.code(401).send({ ok: false, message: 'Invalid refresh token' });
+        }
+
+        await prisma.refreshSession.updateMany({
+          where: {
+            id: payload.sid,
+            userId: payload.sub,
+            tokenHash: hashToken(req.body.refreshToken),
+            revokedAt: null,
+          },
+          data: {
+            revokedAt: new Date(),
+          },
+        });
+
+        return { ok: true };
+      } catch {
+        return reply.code(401).send({ ok: false, message: 'Invalid refresh token' });
       }
     }
   );
