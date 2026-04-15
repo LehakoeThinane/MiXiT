@@ -1,14 +1,14 @@
 services:
   - type: keyvalue
     name: mixit-redis
-    plan: starter
+    plan: free
     region: frankfurt
     ipAllowList: []
 
   - type: web
     name: mixit-api
     runtime: node
-    plan: starter
+    plan: free
     region: frankfurt
     rootDir: backend
     autoDeploy: true
@@ -42,7 +42,7 @@ services:
 databases:
   - name: mixit-db
     region: frankfurt
-    plan: basic-256mb
+    plan: free
     databaseName: mixit
     user: mixit
     ipAllowList: []

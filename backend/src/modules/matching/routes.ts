@@ -2,9 +2,139 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
 
-function deriveTagsFromBio(bio: string | null) {
-  if (!bio) return ['MiXiT'];
-  if (bio.toLowerCase().startsWith('into ')) {
+// ---------------------------------------------------------------------------
+// Scoring helpers
+// ---------------------------------------------------------------------------
+
+/** Haversine distance between two lat/lng points in kilometres. */
+function haversineKm(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): number {
+  const R = 6371; // Earth radius in km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Compute a human-readable distance string between two profiles. */
+function computeDistance(
+  myLat: number | null,
+  myLng: number | null,
+  myCity: string | null,
+  theirLat: number | null,
+  theirLng: number | null,
+  theirCity: string | null
+): string {
+  if (
+    myLat !== null &&
+    myLng !== null &&
+    theirLat !== null &&
+    theirLng !== null
+  ) {
+    const km = haversineKm(myLat, myLng, theirLat, theirLng);
+    if (km < 1) return `${Math.round(km * 1000)}m away`;
+    return `${km.toFixed(1)}km away`;
+  }
+
+  if (myCity && theirCity && myCity.toLowerCase() === theirCity.toLowerCase()) {
+    return 'Same city';
+  }
+
+  return 'Nearby';
+}
+
+/** Parse a JSON column that may be a string[] or null. */
+function parseJsonStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === 'string');
+  }
+  return [];
+}
+
+/**
+ * Score a candidate profile against the current user's profile.
+ *
+ * Breakdown (max 100):
+ *   Interest overlap   — up to 50 pts  (10 per shared interest, capped at 5)
+ *   Intent alignment   — up to 20 pts  (10 per shared intent, capped at 2)
+ *   Recency            — up to 15 pts  (active in last 5 min = 15, last hour = 10, etc.)
+ *   Profile completeness — up to 15 pts (photos +5, bio +5, voice intro +5)
+ */
+function scoreCandidate(
+  myInterests: string[],
+  myIntents: string[],
+  candidate: {
+    interests: unknown;
+    intents: unknown;
+    bio: string | null;
+    photos: unknown;
+    voiceIntroUrl: string | null;
+    lastActive: Date | null;
+  }
+): number {
+  let score = 0;
+
+  // --- Interest overlap (up to 50) ---
+  const theirInterests = parseJsonStringArray(candidate.interests).map((s) =>
+    s.toLowerCase()
+  );
+  const myLower = myInterests.map((s) => s.toLowerCase());
+  const sharedInterests = myLower.filter((interest) =>
+    theirInterests.includes(interest)
+  ).length;
+  score += Math.min(sharedInterests * 10, 50);
+
+  // --- Intent alignment (up to 20) ---
+  const theirIntents = parseJsonStringArray(candidate.intents).map((s) =>
+    s.toLowerCase()
+  );
+  const myIntentsLower = myIntents.map((s) => s.toLowerCase());
+  const sharedIntents = myIntentsLower.filter((intent) =>
+    theirIntents.includes(intent)
+  ).length;
+  score += Math.min(sharedIntents * 10, 20);
+
+  // --- Recency (up to 15) ---
+  if (candidate.lastActive) {
+    const minutesAgo =
+      (Date.now() - candidate.lastActive.getTime()) / (1000 * 60);
+    if (minutesAgo <= 5) score += 15;
+    else if (minutesAgo <= 60) score += 10;
+    else if (minutesAgo <= 1440) score += 5; // within 24h
+    // older than 24h = 0
+  }
+
+  // --- Profile completeness (up to 15) ---
+  const hasPhotos = parseJsonStringArray(candidate.photos).length > 0;
+  const hasBio = Boolean(candidate.bio && candidate.bio.trim().length > 0);
+  const hasVoice = Boolean(candidate.voiceIntroUrl);
+  if (hasPhotos) score += 5;
+  if (hasBio) score += 5;
+  if (hasVoice) score += 5;
+
+  return score;
+}
+
+// ---------------------------------------------------------------------------
+// Card mapping
+// ---------------------------------------------------------------------------
+
+function deriveTagsFromProfile(
+  interests: unknown,
+  bio: string | null
+): string[] {
+  const parsed = parseJsonStringArray(interests);
+  if (parsed.length > 0) return parsed.slice(0, 4);
+
+  if (bio && bio.toLowerCase().startsWith('into ')) {
     return bio
       .slice(5)
       .split(',')
@@ -12,6 +142,7 @@ function deriveTagsFromBio(bio: string | null) {
       .filter(Boolean)
       .slice(0, 4);
   }
+
   return ['MiXiT'];
 }
 
@@ -21,20 +152,19 @@ function mapProfileToDiscoverCard(
     displayName: string;
     age: number;
     bio: string | null;
+    interests: unknown;
     lastActive: Date | null;
   },
-  index: number,
-  city: string
+  distance: string
 ) {
-  const distanceKm = (2.1 + index * 1.3).toFixed(1);
-  const tags = deriveTagsFromBio(profile.bio ?? null);
+  const tags = deriveTagsFromProfile(profile.interests, profile.bio);
 
   return {
     id: profile.userId,
     name: profile.displayName,
     age: profile.age,
-    distance: `${distanceKm}km away`,
-    city,
+    distance,
+    city: distance === 'Same city' || distance === 'Nearby' ? distance : '',
     tags,
     bio: profile.bio ?? 'MiXiT member',
     initial: profile.displayName.slice(0, 1).toUpperCase(),
@@ -46,34 +176,71 @@ function mapProfileToDiscoverCard(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
 const matchingRoutes: FastifyPluginAsync = async (fastify) => {
-  fastify.get('/candidates', { preHandler: [fastify.authenticate] }, async (req) => {
-    const currentUserId = req.user.sub;
+  // ---- Discover candidates (scored) ----
+  fastify.get(
+    '/candidates',
+    { preHandler: [fastify.authenticate] },
+    async (req) => {
+      const currentUserId = req.user.sub;
 
-    const mySentVibes = await prisma.vibe.findMany({
-      where: { fromUserId: currentUserId },
-      select: { toUserId: true },
-    });
-    const excludedUserIds = new Set<string>(mySentVibes.map((item) => item.toUserId));
-    excludedUserIds.add(currentUserId);
+      // Fetch the current user's profile for scoring context
+      const myProfile = await prisma.profile.findUnique({
+        where: { userId: currentUserId },
+      });
 
-    const profiles = await prisma.profile.findMany({
-      where: {
-        userId: {
-          notIn: Array.from(excludedUserIds),
+      const myInterests = parseJsonStringArray(myProfile?.interests);
+      const myIntents = parseJsonStringArray(myProfile?.intents);
+
+      // Exclude users we already vibed
+      const mySentVibes = await prisma.vibe.findMany({
+        where: { fromUserId: currentUserId },
+        select: { toUserId: true },
+      });
+      const excludedUserIds = new Set<string>(
+        mySentVibes.map((item) => item.toUserId)
+      );
+      excludedUserIds.add(currentUserId);
+
+      const profiles = await prisma.profile.findMany({
+        where: {
+          userId: { notIn: Array.from(excludedUserIds) },
         },
-      },
-      orderBy: { updatedAt: 'desc' },
-      take: 20,
-    });
+        orderBy: { updatedAt: 'desc' },
+        take: 40,
+      });
 
-    const candidates = profiles.map((profile, index) =>
-      mapProfileToDiscoverCard(profile, index, 'Nearby')
-    );
+      // Score and sort candidates
+      const scored = profiles.map((profile) => {
+        const score = scoreCandidate(myInterests, myIntents, profile);
+        const distance = computeDistance(
+          myProfile?.locationLat ?? null,
+          myProfile?.locationLng ?? null,
+          myProfile?.city ?? null,
+          profile.locationLat,
+          profile.locationLng,
+          profile.city
+        );
+        return { profile, score, distance };
+      });
 
-    return { ok: true, candidates };
-  });
+      scored.sort((a, b) => b.score - a.score);
 
+      const candidates = scored
+        .slice(0, 20)
+        .map(({ profile, distance }) =>
+          mapProfileToDiscoverCard(profile, distance)
+        );
+
+      return { ok: true, candidates };
+    }
+  );
+
+  // ---- Send a vibe ----
   fastify.post<{
     Body: { toUserId: string };
   }>('/vibe', { preHandler: [fastify.authenticate] }, async (req, reply) => {
@@ -84,20 +251,22 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(400).send({ ok: false, message: 'Invalid recipient' });
     }
     if (toUserId === fromUserId) {
-      return reply.code(400).send({ ok: false, message: 'Cannot vibe yourself' });
+      return reply
+        .code(400)
+        .send({ ok: false, message: 'Cannot vibe yourself' });
     }
 
-    const targetUser = await prisma.user.findUnique({ where: { id: toUserId }, select: { id: true } });
+    const targetUser = await prisma.user.findUnique({
+      where: { id: toUserId },
+      select: { id: true },
+    });
     if (!targetUser) {
       return reply.code(404).send({ ok: false, message: 'User not found' });
     }
 
     await prisma.vibe.upsert({
       where: {
-        fromUserId_toUserId: {
-          fromUserId,
-          toUserId,
-        },
+        fromUserId_toUserId: { fromUserId, toUserId },
       },
       create: { fromUserId, toUserId },
       update: {},
@@ -130,38 +299,136 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
     return { ok: true, matched };
   });
 
-  fastify.get('/vibes', { preHandler: [fastify.authenticate] }, async (req) => {
-    const currentUserId = req.user.sub;
+  // ---- Retract a sent vibe (before mutual match) ----
+  fastify.delete<{
+    Params: { userId: string };
+  }>(
+    '/vibe/:userId',
+    { preHandler: [fastify.authenticate] },
+    async (req, reply) => {
+      const fromUserId = req.user.sub;
+      const toUserId = req.params.userId;
 
-    const incomingVibes = await prisma.vibe.findMany({
-      where: { toUserId: currentUserId },
-      include: {
-        fromUser: {
-          include: { profile: true },
+      if (!toUserId) {
+        return reply
+          .code(400)
+          .send({ ok: false, message: 'Missing user id' });
+      }
+
+      // Only allow retraction if not yet mutually matched
+      const vibe = await prisma.vibe.findUnique({
+        where: {
+          fromUserId_toUserId: { fromUserId, toUserId },
         },
-      },
-      orderBy: [{ matchedAt: 'desc' }, { createdAt: 'desc' }],
-      take: 20,
-    });
+      });
 
-    const vibes = incomingVibes
-      .filter((item) => item.fromUser.profile)
-      .map((item, index) =>
-        mapProfileToDiscoverCard(
-          {
-            userId: item.fromUserId,
-            displayName: item.fromUser.profile?.displayName ?? item.fromUser.phone,
-            age: item.fromUser.profile?.age ?? 25,
-            bio: item.fromUser.profile?.bio ?? null,
-            lastActive: item.fromUser.profile?.lastActive ?? null,
+      if (!vibe) {
+        return reply
+          .code(404)
+          .send({ ok: false, message: 'Vibe not found' });
+      }
+
+      if (vibe.matchedAt) {
+        return reply
+          .code(400)
+          .send({ ok: false, message: 'Cannot retract a matched vibe' });
+      }
+
+      await prisma.vibe.delete({
+        where: {
+          fromUserId_toUserId: { fromUserId, toUserId },
+        },
+      });
+
+      return { ok: true };
+    }
+  );
+
+  // ---- Received vibes ----
+  fastify.get(
+    '/vibes',
+    { preHandler: [fastify.authenticate] },
+    async (req) => {
+      const currentUserId = req.user.sub;
+
+      const myProfile = await prisma.profile.findUnique({
+        where: { userId: currentUserId },
+      });
+
+      const incomingVibes = await prisma.vibe.findMany({
+        where: { toUserId: currentUserId },
+        include: {
+          fromUser: {
+            include: { profile: true },
           },
-          index,
-          'Near you'
-        )
-      );
+        },
+        orderBy: [{ matchedAt: 'desc' }, { createdAt: 'desc' }],
+        take: 20,
+      });
 
-    return { ok: true, vibes };
-  });
+      const vibes = incomingVibes
+        .filter((item) => item.fromUser.profile)
+        .map((item) => {
+          const theirProfile = item.fromUser.profile!;
+          const distance = computeDistance(
+            myProfile?.locationLat ?? null,
+            myProfile?.locationLng ?? null,
+            myProfile?.city ?? null,
+            theirProfile.locationLat,
+            theirProfile.locationLng,
+            theirProfile.city
+          );
+
+          return mapProfileToDiscoverCard(
+            {
+              userId: item.fromUserId,
+              displayName: theirProfile.displayName,
+              age: theirProfile.age,
+              bio: theirProfile.bio,
+              interests: theirProfile.interests,
+              lastActive: theirProfile.lastActive,
+            },
+            distance
+          );
+        });
+
+      return { ok: true, vibes };
+    }
+  );
+
+  // ---- Matching stats for the current user ----
+  fastify.get(
+    '/stats',
+    { preHandler: [fastify.authenticate] },
+    async (req) => {
+      const currentUserId = req.user.sub;
+
+      const [mutualMatches, sentVibes, receivedVibes] = await Promise.all([
+        prisma.vibe.count({
+          where: {
+            fromUserId: currentUserId,
+            matchedAt: { not: null },
+          },
+        }),
+        prisma.vibe.count({
+          where: { fromUserId: currentUserId },
+        }),
+        prisma.vibe.count({
+          where: { toUserId: currentUserId },
+        }),
+      ]);
+
+      return {
+        ok: true,
+        stats: {
+          mutualMatches,
+          sentVibes,
+          receivedVibes,
+          pendingSent: sentVibes - mutualMatches,
+        },
+      };
+    }
+  );
 };
 
 export default matchingRoutes;

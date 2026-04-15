@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { ActivityIndicator, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 
+import { LiquidBackdrop } from '@/components/liquid-backdrop';
 import { getConversations } from '@/lib/messaging-api';
 import { useAuthStore } from '@/stores/auth-store';
 
@@ -26,6 +27,7 @@ export default function ChatsScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      <LiquidBackdrop />
       <Text style={styles.title}>Chats</Text>
       <Text style={styles.subtitle}>Recent conversations</Text>
 
@@ -87,7 +89,7 @@ export default function ChatsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0d18',
+    backgroundColor: '#060710',
     paddingHorizontal: 18,
     paddingTop: 16,
   },
@@ -97,7 +99,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   subtitle: {
-    color: '#98a1c7',
+    color: '#c2c8e2',
     marginTop: 4,
     marginBottom: 8,
     fontSize: 16,
@@ -105,8 +107,8 @@ const styles = StyleSheet.create({
   stateCard: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#29304b',
-    backgroundColor: '#141a2c',
+    borderColor: 'rgba(255,255,255,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
     paddingHorizontal: 14,
     paddingVertical: 14,
     marginBottom: 12,
@@ -120,13 +122,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   stateBody: {
-    color: '#9ca5c8',
+    color: '#d2d7ec',
     fontSize: 14,
     fontWeight: '600',
     textAlign: 'center',
   },
   retryBtn: {
-    backgroundColor: '#ff6b35',
+    backgroundColor: 'rgba(255,107,53,0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 8,
@@ -140,10 +144,10 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   row: {
-    backgroundColor: '#13192b',
+    backgroundColor: 'rgba(255,255,255,0.1)',
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#222944',
+    borderColor: 'rgba(255,255,255,0.18)',
     padding: 12,
     flexDirection: 'row',
     alignItems: 'center',
@@ -171,12 +175,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   preview: {
-    color: '#9099bf',
+    color: '#cfd5ea',
     marginTop: 2,
     fontSize: 14,
   },
   time: {
-    color: '#8f97bc',
+    color: '#c4cae2',
     fontSize: 12,
     fontWeight: '600',
   },

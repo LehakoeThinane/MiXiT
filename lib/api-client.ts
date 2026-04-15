@@ -60,6 +60,7 @@ type RequestOptions = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   auth?: boolean;
+  timeoutMs?: number;
   _retryAfterRefresh?: boolean;
 };
 
@@ -107,7 +108,7 @@ async function tryRefreshToken() {
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, auth = false, _retryAfterRefresh = false } = options;
+  const { method = 'GET', body, auth = false, timeoutMs = 25_000, _retryAfterRefresh = false } = options;
   const token = useAuthStore.getState().accessToken;
   const hasJsonBody = body !== undefined && body !== null;
 
@@ -120,11 +121,25 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method,
-    headers,
-    body: hasJsonBody ? JSON.stringify(body) : undefined,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method,
+      headers,
+      body: hasJsonBody ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiError(0, 'Request timed out. Check your connection and try again.');
+    }
+    throw error;
+  }
+  clearTimeout(timer);
 
   const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
 

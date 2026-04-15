@@ -1,11 +1,14 @@
 import Slider from '@react-native-community/slider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Animated,
+  Easing,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -38,11 +41,32 @@ const VIBE_OPTIONS = [
   'Art',
   'Nature',
 ];
+const INTENT_OPTIONS = ['Chat', 'Friends', 'Something serious', 'Networking'] as const;
 
 const clampStep = (value: number) => Math.max(1, Math.min(7, value)) as Step;
 
+function getShortBio(rawBio: string | null | undefined) {
+  const cleaned = rawBio?.trim() ?? '';
+  if (cleaned && !/^into\s+/i.test(cleaned)) return cleaned;
+  return '';
+}
+
+function formatLastSeenLabel(lastActive?: string | null) {
+  if (!lastActive) return 'Active recently';
+  const timestamp = new Date(lastActive).getTime();
+  if (Number.isNaN(timestamp)) return 'Active recently';
+  const diffMs = Date.now() - timestamp;
+  const diffMinutes = Math.max(1, Math.floor(diffMs / 60000));
+  if (diffMinutes <= 5) return 'Active now';
+  if (diffMinutes < 60) return `Last seen ${diffMinutes}m ago`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `Last seen ${diffHours}h ago`;
+  return `Last seen ${Math.floor(diffHours / 24)}d ago`;
+}
+
 function parseInterestsFromBio(bio?: string | null) {
   if (!bio) return [];
+  if (!/^into\s+/i.test(bio.trim())) return [];
   return bio
     .replace(/^Into\s+/i, '')
     .split(',')
@@ -59,6 +83,14 @@ function parseInterests(profile: { interests?: string[] | null; bio?: string | n
       .slice(0, 12);
   }
   return parseInterestsFromBio(profile.bio);
+}
+
+function parseStringList(value?: string[] | null) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 8);
 }
 
 function resolveErrorMessage(error: unknown) {
@@ -105,6 +137,10 @@ export default function ProfileTabScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const slide = useRef(new Animated.Value(0)).current;
+  const orbA = useRef(new Animated.Value(0)).current;
+  const orbB = useRef(new Animated.Value(0)).current;
+  const orbC = useRef(new Animated.Value(0)).current;
+  const orbD = useRef(new Animated.Value(0)).current;
   const voiceTickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const voiceMsRef = useRef(0);
   const sessionBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -123,7 +159,13 @@ export default function ProfileTabScreen() {
   const [displayName, setDisplayName] = useState('');
   const [age, setAge] = useState(24);
   const [gender, setGender] = useState<Gender>('female');
+  const [bioInput, setBioInput] = useState('');
   const [selectedVibes, setSelectedVibes] = useState<string[]>([]);
+  const [selectedIntents, setSelectedIntents] = useState<string[]>([]);
+  const [traitsText, setTraitsText] = useState('');
+  const [selectedPhotos, setSelectedPhotos] = useState<string[]>([]);
+  const [showPhone, setShowPhone] = useState(true);
+  const [showLastSeen, setShowLastSeen] = useState(true);
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -168,6 +210,37 @@ export default function ProfileTabScreen() {
   }, [slide, step]);
 
   useEffect(() => {
+    const createLoop = (value: Animated.Value, duration: number, delayMs = 0) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delayMs),
+          Animated.timing(value, {
+            toValue: 1,
+            duration,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+          Animated.timing(value, {
+            toValue: 0,
+            duration,
+            easing: Easing.inOut(Easing.sin),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+
+    const loops = [
+      createLoop(orbA, 18000, 0),
+      createLoop(orbB, 22000, 900),
+      createLoop(orbC, 20000, 1400),
+      createLoop(orbD, 24000, 500),
+    ];
+
+    loops.forEach((loop) => loop.start());
+    return () => loops.forEach((loop) => loop.stop());
+  }, [orbA, orbB, orbC, orbD]);
+
+  useEffect(() => {
     if (sessionQuery.isError) {
       clearSession();
       setStep(1);
@@ -209,7 +282,13 @@ export default function ProfileTabScreen() {
     setDisplayName(profile.displayName ?? '');
     setAge(profile.age ?? 24);
     setGender((profile.gender as Gender) ?? 'female');
+    setBioInput(profile.bio ?? '');
     setSelectedVibes(parseInterests(profile));
+    setSelectedIntents(parseStringList(profile.intents).slice(0, 4));
+    setTraitsText(parseStringList(profile.traits).join('\n'));
+    setSelectedPhotos(parseStringList(profile.photos).slice(0, 3));
+    setShowPhone(profile.showPhone ?? true);
+    setShowLastSeen(profile.showLastSeen ?? true);
   }, [profileQuery.data]);
 
   const requestOtpMutation = useMutation({
@@ -220,9 +299,6 @@ export default function ProfileTabScreen() {
       setOtpCode('');
       setOtpVerified(false);
       setLastDebugCode(payload.debugCode ?? null);
-      if (payload.debugCode) {
-        Alert.alert('Dev OTP', `Use code ${payload.debugCode}`);
-      }
     },
     onError: (error) => {
       const message = resolveErrorMessage(error);
@@ -264,8 +340,17 @@ export default function ProfileTabScreen() {
         displayName: displayName.trim(),
         age,
         gender,
-        bio: selectedVibes.length ? `Into ${selectedVibes.join(', ')}` : 'MiXiT user',
+        bio: bioInput.trim(),
         interests: selectedVibes,
+        intents: selectedIntents,
+        traits: traitsText
+          .split('\n')
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .slice(0, 5),
+        photos: selectedPhotos.slice(0, 3),
+        showPhone,
+        showLastSeen,
       }),
     onSuccess: async () => {
       setStepError(null);
@@ -286,6 +371,20 @@ export default function ProfileTabScreen() {
   const canSaveProfile = displayName.trim().length >= 2 && selectedVibes.length >= 3;
   const hasExistingProfile = Boolean(profileQuery.data);
   const shouldShowProfileHome = isAuthenticated && hasExistingProfile && !showCompletionStep;
+  const primaryPhoto = selectedPhotos[0] ?? null;
+  const mediaItems = [0, 1, 2].map((index) => selectedPhotos[index] ?? null);
+  const shortBio = getShortBio(bioInput || profileQuery.data?.bio);
+  const intentOptions = selectedIntents;
+  const isActiveNow = showLastSeen && formatLastSeenLabel(profileQuery.data?.lastActive) === 'Active now';
+  const lastSeenLabel = showLastSeen ? formatLastSeenLabel(profileQuery.data?.lastActive) : 'Last seen hidden';
+  const joinedLabel = profileQuery.data?.joinedAt ? `Joined ${new Date(profileQuery.data.joinedAt).getFullYear()}` : '';
+  const roomsParticipated = profileQuery.data?.roomsParticipated ?? null;
+  const identityInterests = selectedVibes;
+  const personalityTraits = traitsText
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 5);
 
   const toggleVibe = (vibe: string) => {
     setSelectedVibes((prev) => {
@@ -293,6 +392,50 @@ export default function ProfileTabScreen() {
       if (prev.length >= 8) return prev;
       return [...prev, vibe];
     });
+  };
+
+  const toggleIntent = (intent: string) => {
+    setSelectedIntents((prev) => {
+      if (prev.includes(intent)) return prev.filter((item) => item !== intent);
+      if (prev.length >= 4) return prev;
+      return [...prev, intent];
+    });
+  };
+
+  const pickPhotoAt = async (index: number) => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission needed', 'Allow photo access to add profile images.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.6,
+      base64: true,
+    });
+
+    if (result.canceled || !result.assets.length) return;
+
+    const asset = result.assets[0];
+    const encoded =
+      asset.base64 && asset.mimeType
+        ? `data:${asset.mimeType};base64,${asset.base64}`
+        : asset.base64
+        ? `data:image/jpeg;base64,${asset.base64}`
+        : asset.uri;
+
+    setSelectedPhotos((prev) => {
+      const next = [...prev];
+      next[index] = encoded;
+      return next.slice(0, 3);
+    });
+  };
+
+  const removePhotoAt = (index: number) => {
+    setSelectedPhotos((prev) => prev.filter((_, position) => position !== index));
   };
 
   const runResendAutofill = async () => {
@@ -313,12 +456,25 @@ export default function ProfileTabScreen() {
     }
   };
 
+  const applyDebugCode = () => {
+    if (!lastDebugCode) return;
+    setOtpCode(lastDebugCode);
+    setOtpVerified(false);
+    setStepError(null);
+  };
+
   const handleLogout = () => {
     clearSession();
     setStep(1);
     setPhone('');
     setOtpCode('');
     setOtpVerified(false);
+    setBioInput('');
+    setSelectedIntents([]);
+    setTraitsText('');
+    setSelectedPhotos([]);
+    setShowPhone(true);
+    setShowLastSeen(true);
     setStepError(null);
     setShowCompletionStep(false);
     setIsEditingProfile(false);
@@ -382,6 +538,64 @@ export default function ProfileTabScreen() {
     }
   }, [step]);
 
+  const liquidBackdrop = (
+    <View pointerEvents="none" style={styles.liquidBackground}>
+      <Animated.View
+        style={[
+          styles.orb,
+          styles.orbCoral,
+          {
+            transform: [
+              { translateX: orbA.interpolate({ inputRange: [0, 1], outputRange: [-20, 36] }) },
+              { translateY: orbA.interpolate({ inputRange: [0, 1], outputRange: [-16, 48] }) },
+              { scale: orbA.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] }) },
+            ],
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.orb,
+          styles.orbNavy,
+          {
+            transform: [
+              { translateX: orbB.interpolate({ inputRange: [0, 1], outputRange: [24, -40] }) },
+              { translateY: orbB.interpolate({ inputRange: [0, 1], outputRange: [18, -38] }) },
+              { scale: orbB.interpolate({ inputRange: [0, 1], outputRange: [1.1, 0.92] }) },
+            ],
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.orb,
+          styles.orbRose,
+          {
+            transform: [
+              { translateX: orbC.interpolate({ inputRange: [0, 1], outputRange: [-12, 28] }) },
+              { translateY: orbC.interpolate({ inputRange: [0, 1], outputRange: [24, -44] }) },
+              { scale: orbC.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.16] }) },
+            ],
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.orb,
+          styles.orbTeal,
+          {
+            transform: [
+              { translateX: orbD.interpolate({ inputRange: [0, 1], outputRange: [18, -34] }) },
+              { translateY: orbD.interpolate({ inputRange: [0, 1], outputRange: [-26, 36] }) },
+              { scale: orbD.interpolate({ inputRange: [0, 1], outputRange: [1.04, 1.22] }) },
+            ],
+          },
+        ]}
+      />
+      <View style={styles.liquidScrim} />
+    </View>
+  );
+
   if (!hasHydrated) {
     return (
       <View style={styles.centered}>
@@ -402,12 +616,13 @@ export default function ProfileTabScreen() {
   if (shouldShowProfileHome) {
     return (
       <SafeAreaView style={styles.container}>
+        {liquidBackdrop}
         <KeyboardAvoidingView
           style={styles.flex}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 78 : 0}>
           <ScrollView
-            contentContainerStyle={styles.content}
+            contentContainerStyle={styles.profileContent}
             keyboardShouldPersistTaps="handled"
             automaticallyAdjustKeyboardInsets>
             <Text style={styles.profileTitle}>Profile</Text>
@@ -419,11 +634,24 @@ export default function ProfileTabScreen() {
             ) : null}
 
             <View style={styles.profileCard}>
-              <View style={styles.profileAvatar}>
-                <Text style={styles.profileAvatarText}>{displayName.slice(0, 1).toUpperCase() || 'M'}</Text>
+              <View style={styles.profileHeaderRow}>
+                {primaryPhoto ? (
+                  <Image source={{ uri: primaryPhoto }} style={styles.profilePhoto} contentFit="cover" />
+                ) : (
+                  <View style={styles.profileAvatar}>
+                    <Text style={styles.profileAvatarText}>{displayName.slice(0, 1).toUpperCase() || 'M'}</Text>
+                  </View>
+                )}
+                <View style={styles.profileIdentityBlock}>
+                  <Text style={styles.profileName}>{displayName}</Text>
+                  {showPhone ? <Text style={styles.profilePhone}>{user?.phone ?? ''}</Text> : null}
+                  <View style={styles.statusRow}>
+                    <View style={[styles.statusDot, isActiveNow && styles.statusDotActive]} />
+                    <Text style={styles.statusText}>{lastSeenLabel}</Text>
+                  </View>
+                  {profileQuery.data?.city ? <Text style={styles.profileCity}>{profileQuery.data.city}</Text> : null}
+                </View>
               </View>
-              <Text style={styles.profileName}>{displayName}</Text>
-              <Text style={styles.profilePhone}>{user?.phone ?? ''}</Text>
               <View style={styles.profileMetaRow}>
                 <View style={styles.profileMetaPill}>
                   <Text style={styles.profileMetaText}>{age} years</Text>
@@ -472,6 +700,31 @@ export default function ProfileTabScreen() {
                   })}
                 </View>
 
+                <Text style={styles.label}>Bio (1-2 lines)</Text>
+                <TextInput
+                  value={bioInput}
+                  onChangeText={(value) => setBioInput(value.slice(0, 120))}
+                  placeholder="Add a short bio"
+                  placeholderTextColor="#8d90a6"
+                  multiline
+                  style={[styles.input, styles.bioInput]}
+                />
+
+                <Text style={styles.label}>Looking for</Text>
+                <View style={styles.intentRow}>
+                  {INTENT_OPTIONS.map((intent) => {
+                    const active = selectedIntents.includes(intent);
+                    return (
+                      <Pressable
+                        key={intent}
+                        style={[styles.intentChip, active && styles.intentChipActive]}
+                        onPress={() => toggleIntent(intent)}>
+                        <Text style={[styles.intentText, active && styles.intentTextActive]}>{intent}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
                 <Text style={styles.label}>Interests</Text>
                 <View style={styles.vibeGrid}>
                   {VIBE_OPTIONS.map((vibe) => {
@@ -487,6 +740,52 @@ export default function ProfileTabScreen() {
                   })}
                 </View>
                 <Text style={styles.counterText}>{selectedVibes.length} selected</Text>
+
+                <Text style={styles.label}>Personality traits</Text>
+                <TextInput
+                  value={traitsText}
+                  onChangeText={(value) => setTraitsText(value.slice(0, 400))}
+                  placeholder={'Pet peeve: slow WiFi\nGo-to topic: business + tech'}
+                  placeholderTextColor="#8d90a6"
+                  multiline
+                  style={[styles.input, styles.traitsInput]}
+                />
+
+                <Text style={styles.label}>Media</Text>
+                <View style={styles.mediaRow}>
+                  {mediaItems.map((uri, index) => (
+                    <View key={`${uri ?? 'slot-edit'}-${index}`} style={styles.mediaEditorCell}>
+                      <Pressable style={styles.mediaTile} onPress={() => pickPhotoAt(index)}>
+                        {uri ? (
+                          <Image source={{ uri }} style={styles.mediaImage} contentFit="cover" />
+                        ) : (
+                          <Text style={styles.mediaPlaceholder}>Add photo</Text>
+                        )}
+                      </Pressable>
+                      {uri ? (
+                        <Pressable style={styles.mediaAction} onPress={() => removePhotoAt(index)}>
+                          <Text style={styles.mediaActionText}>Remove</Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+
+                <Text style={styles.label}>Privacy</Text>
+                <View style={styles.toggleGroup}>
+                  <Pressable style={[styles.pill, showPhone && styles.pillActive]} onPress={() => setShowPhone((prev) => !prev)}>
+                    <Text style={[styles.pillText, showPhone && styles.pillTextActive]}>
+                      {showPhone ? 'Phone visible' : 'Phone hidden'}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.pill, showLastSeen && styles.pillActive]}
+                    onPress={() => setShowLastSeen((prev) => !prev)}>
+                    <Text style={[styles.pillText, showLastSeen && styles.pillTextActive]}>
+                      {showLastSeen ? 'Last seen visible' : 'Last seen hidden'}
+                    </Text>
+                  </Pressable>
+                </View>
 
                 <Pressable
                   style={[styles.button, (!canSaveProfile || saveProfileMutation.isPending) && styles.buttonDisabled]}
@@ -505,26 +804,106 @@ export default function ProfileTabScreen() {
                       setDisplayName(currentProfile.displayName ?? '');
                       setAge(currentProfile.age ?? 24);
                       setGender((currentProfile.gender as Gender) ?? 'female');
+                      setBioInput(currentProfile.bio ?? '');
                       setSelectedVibes(parseInterests(currentProfile));
+                      setSelectedIntents(parseStringList(currentProfile.intents).slice(0, 4));
+                      setTraitsText(parseStringList(currentProfile.traits).join('\n'));
+                      setSelectedPhotos(parseStringList(currentProfile.photos).slice(0, 3));
+                      setShowPhone(currentProfile.showPhone ?? true);
+                      setShowLastSeen(currentProfile.showLastSeen ?? true);
                     }
                   }}>
                   <Text style={styles.secondaryButtonText}>Cancel</Text>
                 </Pressable>
               </View>
             ) : (
-              <View style={styles.stepBlock}>
-                <Text style={styles.label}>Interests</Text>
-                <View style={styles.vibeGrid}>
-                  {selectedVibes.length > 0 ? (
-                    selectedVibes.map((vibe) => (
-                      <View key={vibe} style={[styles.vibeChip, styles.vibeChipActive]}>
-                        <Text style={[styles.vibeChipText, styles.vibeChipTextActive]}>{vibe}</Text>
+              <View style={styles.profileStack}>
+                <View style={styles.stepBlock}>
+                  <Text style={styles.sectionTitle}>Bio</Text>
+                  <Text style={styles.bodyText}>{shortBio || 'No bio yet'}</Text>
+                </View>
+
+                <View style={styles.stepBlock}>
+                  <Text style={styles.sectionTitle}>Looking for</Text>
+                  {intentOptions.length > 0 ? (
+                    <View style={styles.intentRow}>
+                      {intentOptions.map((intent) => (
+                        <View key={intent} style={styles.intentChip}>
+                          <Text style={styles.intentText}>{intent}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  ) : (
+                    <Text style={styles.supportText}>Not set</Text>
+                  )}
+                </View>
+
+                <View style={styles.stepBlock}>
+                  <Text style={styles.sectionTitle}>Vibe / Activity</Text>
+                  <Text style={styles.bodyText}>{lastSeenLabel}</Text>
+                  <Text style={styles.supportText}>
+                    {showPhone ? 'Phone visible on profile' : 'Phone hidden on profile'}
+                  </Text>
+                </View>
+
+                <View style={styles.stepBlock}>
+                  <Text style={styles.sectionTitle}>Social proof</Text>
+                  <View style={styles.socialProofRow}>
+                    {joinedLabel ? (
+                      <View style={styles.socialProofCard}>
+                        <Text style={styles.socialProofTitle}>{joinedLabel}</Text>
+                      </View>
+                    ) : null}
+                    {roomsParticipated !== null ? (
+                      <View style={styles.socialProofCard}>
+                        <Text style={styles.socialProofTitle}>{roomsParticipated} rooms participated</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  {!joinedLabel && roomsParticipated === null ? <Text style={styles.supportText}>No activity yet</Text> : null}
+                </View>
+
+                <View style={styles.stepBlock}>
+                  <Text style={styles.sectionTitle}>Interests</Text>
+                  {identityInterests.length > 0 ? (
+                    identityInterests.map((line) => (
+                      <View key={line} style={styles.identityLineWrap}>
+                        <Text style={styles.identityLine}>• {line}</Text>
                       </View>
                     ))
                   ) : (
                     <Text style={styles.counterText}>No interests yet</Text>
                   )}
                 </View>
+
+                <View style={styles.stepBlock}>
+                  <Text style={styles.sectionTitle}>Media</Text>
+                  <View style={styles.mediaRow}>
+                    {mediaItems.map((uri, index) => (
+                      <View key={`${uri ?? 'slot'}-${index}`} style={styles.mediaTile}>
+                        {uri ? (
+                          <Image source={{ uri }} style={styles.mediaImage} contentFit="cover" />
+                        ) : (
+                          <Text style={styles.mediaPlaceholder}>Add photo</Text>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                </View>
+
+                <View style={styles.stepBlock}>
+                  <Text style={styles.sectionTitle}>Conversation starters</Text>
+                  {personalityTraits.length > 0 ? (
+                    personalityTraits.map((trait) => (
+                      <Text key={trait} style={styles.identityLine}>
+                        • {trait}
+                      </Text>
+                    ))
+                  ) : (
+                    <Text style={styles.supportText}>No traits added yet</Text>
+                  )}
+                </View>
+
                 <Pressable style={styles.button} onPress={() => setIsEditingProfile(true)}>
                   <Text style={styles.buttonText}>Edit profile</Text>
                 </Pressable>
@@ -542,6 +921,7 @@ export default function ProfileTabScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      {liquidBackdrop}
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -607,6 +987,15 @@ export default function ProfileTabScreen() {
                 <Pressable onPress={runResendAutofill} disabled={requestOtpMutation.isPending}>
                   <Text style={styles.link}>Resend code</Text>
                 </Pressable>
+                {lastDebugCode ? (
+                  <View style={styles.devOtpCard}>
+                    <Text style={styles.devOtpLabel}>Test mode OTP</Text>
+                    <Text style={styles.devOtpCode}>{lastDebugCode}</Text>
+                    <Pressable onPress={applyDebugCode}>
+                      <Text style={styles.devOtpAction}>Use this code</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
               </View>
             )}
 
@@ -728,7 +1117,7 @@ export default function ProfileTabScreen() {
             )}
 
             {step === 7 && (
-              <View style={styles.stepBlock}>
+              <View style={[styles.stepBlock, styles.stepBlockStrong]}>
                 <View style={styles.doneRing}>
                   <Text style={styles.doneCheck}>✓</Text>
                 </View>
@@ -757,7 +1146,42 @@ export default function ProfileTabScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0e1018',
+    backgroundColor: '#060710',
+  },
+  liquidBackground: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: 'hidden',
+  },
+  liquidScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(7, 9, 20, 0.60)',
+  },
+  orb: {
+    position: 'absolute',
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    opacity: 0.52,
+  },
+  orbCoral: {
+    top: -120,
+    left: -40,
+    backgroundColor: '#ff6b35',
+  },
+  orbNavy: {
+    top: 80,
+    right: -110,
+    backgroundColor: '#2d3561',
+  },
+  orbRose: {
+    bottom: 120,
+    left: 12,
+    backgroundColor: '#9f4f77',
+  },
+  orbTeal: {
+    bottom: -90,
+    right: -36,
+    backgroundColor: '#06d6a0',
   },
   flex: {
     flex: 1,
@@ -766,11 +1190,17 @@ const styles = StyleSheet.create({
     padding: 20,
     paddingBottom: 120,
   },
+  profileContent: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 156,
+    gap: 12,
+  },
   centered: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#0e1018',
+    backgroundColor: '#060710',
   },
   restoringText: {
     color: '#aeb6d6',
@@ -791,7 +1221,7 @@ const styles = StyleSheet.create({
     height: 4,
     flex: 1,
     borderRadius: 4,
-    backgroundColor: '#202640',
+    backgroundColor: 'rgba(255,255,255,0.15)',
   },
   segmentActive: {
     backgroundColor: '#ff6b35',
@@ -805,19 +1235,19 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#2a314d',
+    backgroundColor: 'rgba(255,255,255,0.24)',
   },
   dotActive: {
     backgroundColor: '#ff6b35',
     width: 16,
   },
   stepLabel: {
-    color: '#8f97bc',
+    color: '#b6bdd8',
     fontSize: 14,
     fontWeight: '600',
   },
   backLink: {
-    color: '#9ca8ff',
+    color: '#d2d8ff',
     marginBottom: 6,
     fontSize: 16,
     fontWeight: '600',
@@ -840,55 +1270,96 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   caption: {
-    color: '#8c94b8',
+    color: '#c2c7dc',
     marginTop: 4,
     marginBottom: 8,
     fontSize: 13,
   },
   profileCard: {
-    borderRadius: 16,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#252d49',
-    backgroundColor: '#141a2c',
+    borderColor: 'rgba(255,255,255,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.13)',
     padding: 16,
+    marginBottom: 12,
+  },
+  profileHeaderRow: {
+    flexDirection: 'row',
+    gap: 12,
     alignItems: 'center',
     marginBottom: 12,
   },
+  profilePhoto: {
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.28)',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
   profileAvatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 86,
+    height: 86,
+    borderRadius: 43,
     backgroundColor: '#ff6b35',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
+  },
+  profileIdentityBlock: {
+    flex: 1,
+    gap: 2,
   },
   profileAvatarText: {
     color: '#10131d',
-    fontSize: 30,
+    fontSize: 34,
     fontWeight: '700',
   },
   profileName: {
     color: '#f7f8ff',
-    fontSize: 28,
+    fontSize: 40,
     fontWeight: '700',
+    lineHeight: 44,
   },
   profilePhone: {
-    color: '#a8b0d0',
-    marginTop: 4,
-    marginBottom: 8,
-    fontSize: 15,
+    color: '#d2d6ea',
+    marginTop: 2,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  profileCity: {
+    color: '#d0d5ec',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+  },
+  statusDotActive: {
+    backgroundColor: '#22c67a',
+  },
+  statusText: {
+    color: '#d9dcf2',
+    fontSize: 13,
     fontWeight: '600',
   },
   profileMetaRow: {
     flexDirection: 'row',
     gap: 8,
+    flexWrap: 'wrap',
   },
   profileMetaPill: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#2a3148',
-    backgroundColor: '#1a1f2e',
+    borderColor: 'rgba(255,255,255,0.24)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
     paddingHorizontal: 12,
     paddingVertical: 6,
   },
@@ -899,9 +1370,9 @@ const styles = StyleSheet.create({
   },
   sessionBanner: {
     marginBottom: 10,
-    backgroundColor: '#163126',
+    backgroundColor: 'rgba(15, 86, 58, 0.42)',
     borderWidth: 1,
-    borderColor: '#22c67a',
+    borderColor: 'rgba(34,198,122,0.72)',
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -919,7 +1390,140 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   stepBlock: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderColor: 'rgba(255,255,255,0.2)',
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 14,
     gap: 10,
+  },
+  profileStack: {
+    gap: 12,
+  },
+  sectionTitle: {
+    color: '#f7f8ff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  bodyText: {
+    color: '#dbe0f3',
+    fontSize: 16,
+    lineHeight: 24,
+    fontWeight: '600',
+  },
+  supportText: {
+    color: '#bbc3e4',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
+  },
+  intentRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  intentChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.24)',
+    backgroundColor: 'rgba(255,255,255,0.11)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  intentChipActive: {
+    borderColor: 'rgba(255,184,160,0.9)',
+    backgroundColor: 'rgba(255,107,53,0.32)',
+  },
+  intentText: {
+    color: '#e7ebff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  intentTextActive: {
+    color: '#ffb193',
+  },
+  toggleGroup: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  socialProofRow: {
+    flexDirection: 'row',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  socialProofCard: {
+    flexGrow: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  socialProofTitle: {
+    color: '#e2e7fb',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  identityLineWrap: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  identityLine: {
+    color: '#dbe0f3',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '600',
+  },
+  mediaRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  mediaEditorCell: {
+    flex: 1,
+    gap: 6,
+  },
+  mediaTile: {
+    flex: 1,
+    height: 120,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  mediaImage: {
+    width: '100%',
+    height: '100%',
+  },
+  mediaPlaceholder: {
+    color: '#c8cfe9',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  mediaAction: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.09)',
+    paddingVertical: 6,
+    alignItems: 'center',
+  },
+  mediaActionText: {
+    color: '#d9dff6',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  stepBlockStrong: {
+    backgroundColor: 'rgba(255,255,255,0.13)',
+    borderColor: 'rgba(255,255,255,0.3)',
   },
   label: {
     color: '#d9dcf2',
@@ -928,20 +1532,36 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   input: {
-    backgroundColor: '#1a1f2e',
+    backgroundColor: 'rgba(255,255,255,0.08)',
     color: '#ffffff',
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#2a3148',
+    borderColor: 'rgba(255,255,255,0.24)',
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 24,
     fontWeight: '500',
   },
+  bioInput: {
+    minHeight: 78,
+    maxHeight: 120,
+    textAlignVertical: 'top',
+    fontSize: 18,
+    lineHeight: 24,
+  },
+  traitsInput: {
+    minHeight: 90,
+    maxHeight: 160,
+    textAlignVertical: 'top',
+    fontSize: 16,
+    lineHeight: 22,
+  },
   button: {
     marginTop: 12,
-    backgroundColor: '#ff6b35',
-    borderRadius: 12,
+    backgroundColor: 'rgba(255,107,53,0.78)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.32)',
     paddingVertical: 13,
     alignItems: 'center',
   },
@@ -949,12 +1569,12 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
   buttonText: {
-    color: '#10131d',
+    color: '#151722',
     fontWeight: '700',
     fontSize: 18,
   },
   link: {
-    color: '#9ca8ff',
+    color: '#d5dbff',
     marginTop: 8,
     textDecorationLine: 'underline',
     fontSize: 16,
@@ -969,10 +1589,10 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#2a3148',
+    borderColor: 'rgba(255,255,255,0.22)',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#171d2c',
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
   otpBoxVerified: {
     borderColor: '#22c67a',
@@ -997,8 +1617,8 @@ const styles = StyleSheet.create({
   },
   suggestionChip: {
     borderWidth: 1,
-    borderColor: '#2d3555',
-    backgroundColor: '#1a2033',
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.08)',
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -1015,14 +1635,14 @@ const styles = StyleSheet.create({
   pill: {
     paddingVertical: 10,
     paddingHorizontal: 12,
-    backgroundColor: '#1a1f2e',
-    borderColor: '#2a3148',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderColor: 'rgba(255,255,255,0.2)',
     borderWidth: 1,
     borderRadius: 999,
   },
   pillActive: {
-    backgroundColor: '#ff6b35',
-    borderColor: '#ff6b35',
+    backgroundColor: 'rgba(255,107,53,0.68)',
+    borderColor: 'rgba(255,201,182,0.72)',
   },
   pillText: {
     color: '#d9dcf2',
@@ -1041,15 +1661,15 @@ const styles = StyleSheet.create({
   vibeChip: {
     width: '48.5%',
     borderWidth: 1,
-    borderColor: '#323b60',
-    backgroundColor: '#171e30',
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.1)',
     borderRadius: 12,
     paddingVertical: 11,
     paddingHorizontal: 10,
   },
   vibeChipActive: {
-    borderColor: '#ff6b35',
-    backgroundColor: '#2e1c1a',
+    borderColor: 'rgba(255,184,160,0.8)',
+    backgroundColor: 'rgba(255,107,53,0.32)',
   },
   vibeChipText: {
     color: '#c4cbe8',
@@ -1060,7 +1680,7 @@ const styles = StyleSheet.create({
     color: '#ff6b35',
   },
   counterText: {
-    color: '#a8b0d0',
+    color: '#d2d7ec',
     marginTop: 2,
     fontWeight: '600',
   },
@@ -1068,7 +1688,9 @@ const styles = StyleSheet.create({
     width: 88,
     height: 88,
     borderRadius: 44,
-    backgroundColor: '#ff6b35',
+    backgroundColor: 'rgba(255,107,53,0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.36)',
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'center',
@@ -1089,9 +1711,9 @@ const styles = StyleSheet.create({
   waveWrap: {
     height: 64,
     borderRadius: 12,
-    backgroundColor: '#141a2b',
+    backgroundColor: 'rgba(255,255,255,0.13)',
     borderWidth: 1,
-    borderColor: '#2a3148',
+    borderColor: 'rgba(255,255,255,0.24)',
     paddingHorizontal: 10,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1131,18 +1753,48 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   doneBody: {
-    color: '#a5aecf',
+    color: '#d7dbeb',
     textAlign: 'center',
     fontSize: 17,
     lineHeight: 24,
   },
   secondaryButton: {
-    backgroundColor: '#232a3f',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderColor: 'rgba(255,255,255,0.24)',
     marginTop: 8,
   },
   secondaryButtonText: {
     color: '#d9dcf2',
     fontWeight: '700',
     fontSize: 17,
+  },
+  devOtpCard: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(157,192,255,0.5)',
+    backgroundColor: 'rgba(104,140,199,0.18)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 4,
+  },
+  devOtpLabel: {
+    color: '#9dc0ff',
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  devOtpCode: {
+    color: '#f7f8ff',
+    fontSize: 24,
+    fontWeight: '700',
+    letterSpacing: 2,
+  },
+  devOtpAction: {
+    color: '#9ca8ff',
+    fontSize: 14,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
   },
 });

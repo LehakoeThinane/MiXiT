@@ -19,6 +19,7 @@ model User {
   receivedVibes  Vibe[]           @relation("vibe_recipient")
   roomMembership RoomMembership[]
   refreshSessions RefreshSession[]
+  purchases      UserPurchase[]
 
   @@map("users")
 }
@@ -34,7 +35,11 @@ model Profile {
   locationLat Float?   @map("location_lat")
   locationLng Float?   @map("location_lng")
   interests   Json?
+  intents     Json?
+  traits      Json?
   photos      Json?
+  showPhone   Boolean  @default(true) @map("show_phone")
+  showLastSeen Boolean @default(true) @map("show_last_seen")
   voiceIntroUrl String? @map("voice_intro_url")
   voiceIntroDurationSec Int? @map("voice_intro_duration_sec")
   completedAt DateTime? @map("completed_at")
@@ -124,4 +129,38 @@ model RefreshSession {
 
   @@index([userId, revokedAt, expiresAt])
   @@map("refresh_sessions")
+}
+
+model Product {
+  id          String   @id @default(uuid())
+  slug        String   @unique
+  name        String
+  description String?
+  priceInCents Int     @map("price_in_cents")
+  currency    String   @default("ZAR")
+  type        String   @default("subscription") // subscription | boost | feature
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  purchases UserPurchase[]
+
+  @@map("products")
+}
+
+model UserPurchase {
+  id          String    @id @default(uuid())
+  userId      String    @map("user_id")
+  productId   String    @map("product_id")
+  status      String    @default("active") // active | expired | cancelled
+  expiresAt   DateTime? @map("expires_at")
+  cancelledAt DateTime? @map("cancelled_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("user_purchases")
 }

@@ -3,6 +3,7 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { LiquidBackdrop } from '@/components/liquid-backdrop';
 import { getThreadMessages, sendMessage, type ThreadMessage } from '@/lib/messaging-api';
 import { connectSocket, disconnectSocket, getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
@@ -90,6 +91,7 @@ export default function ChatScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      <LiquidBackdrop />
       <Stack.Screen options={{ headerShown: false }} />
 
       <View style={styles.header}>
@@ -167,7 +169,7 @@ export default function ChatScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0b0d18',
+    backgroundColor: '#060710',
   },
   header: {
     paddingHorizontal: 16,
@@ -176,10 +178,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: '#181d2f',
+    borderBottomColor: 'rgba(255,255,255,0.14)',
   },
   backButton: {
-    color: '#c6cde8',
+    color: '#e0e4f5',
     fontSize: 28,
     marginRight: 8,
     width: 24,
@@ -207,7 +209,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   online: {
-    color: '#33d69f',
+    color: '#65efc1',
     fontWeight: '600',
     fontSize: 13,
   },
@@ -218,9 +220,9 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   emptyState: {
-    backgroundColor: '#141a2c',
+    backgroundColor: 'rgba(255,255,255,0.11)',
     borderWidth: 1,
-    borderColor: '#252d49',
+    borderColor: 'rgba(255,255,255,0.2)',
     borderRadius: 14,
     padding: 14,
   },
@@ -230,7 +232,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   emptyBody: {
-    color: '#9ea6c9',
+    color: '#d2d7eb',
     fontSize: 14,
     marginTop: 4,
   },
@@ -251,12 +253,16 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   mineBubble: {
-    backgroundColor: '#ff6b35',
+    backgroundColor: 'rgba(255,107,53,0.76)',
     borderBottomRightRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.28)',
   },
   theirBubble: {
-    backgroundColor: '#171c2f',
+    backgroundColor: 'rgba(255,255,255,0.11)',
     borderBottomLeftRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
   },
   messageText: {
     color: '#f4f6ff',
@@ -265,14 +271,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   timeText: {
-    color: '#7d85a8',
+    color: '#c7cce2',
     fontSize: 12,
     marginTop: 4,
   },
   voiceBubble: {
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#242c47',
+    borderColor: 'rgba(255,255,255,0.2)',
     paddingHorizontal: 10,
     height: 40,
     alignItems: 'center',
@@ -280,10 +286,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   mineVoice: {
-    backgroundColor: '#2b2432',
+    backgroundColor: 'rgba(255,107,53,0.22)',
   },
   theirVoice: {
-    backgroundColor: '#151a2a',
+    backgroundColor: 'rgba(255,255,255,0.1)',
   },
   voicePlay: {
     color: '#ff6b35',
@@ -293,10 +299,10 @@ const styles = StyleSheet.create({
     width: 64,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#525b85',
+    backgroundColor: 'rgba(150,159,197,0.9)',
   },
   voiceDuration: {
-    color: '#9ea6c9',
+    color: '#d0d5ea',
     fontWeight: '700',
     fontSize: 12,
   },
@@ -307,9 +313,9 @@ const styles = StyleSheet.create({
     right: 12,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#12172a',
+    backgroundColor: 'rgba(255,255,255,0.12)',
     borderWidth: 1,
-    borderColor: '#262d47',
+    borderColor: 'rgba(255,255,255,0.22)',
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
@@ -321,14 +327,14 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1b2238',
+    backgroundColor: 'rgba(255,255,255,0.14)',
   },
   smallActionText: {
     fontSize: 13,
   },
   input: {
     flex: 1,
-    color: '#d6dbf4',
+    color: '#eef0fc',
     fontSize: 15,
     paddingVertical: 0,
   },
@@ -338,7 +344,9 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#ff6b35',
+    backgroundColor: 'rgba(255,107,53,0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
   },
   sendActionDisabled: {
     opacity: 0.5,

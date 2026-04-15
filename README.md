@@ -12,8 +12,12 @@ Implemented:
 - Backend scaffold in `backend/`:
   - Fastify app and health route
   - Module boundaries: `auth`, `profiles`, `matching`, `messaging`, `rooms`, `payments`
-  - Prisma schema for `users`, `profiles`, `messages`, `vibes`, `rooms`, `room_memberships`
-  - Socket.io realtime messaging support
+  - Prisma schema for `users`, `profiles`, `messages`, `vibes`, `rooms`, `room_memberships`, `products`, `user_purchases`
+  - **Auth**: Phone OTP via SMSPortal with JWT access/refresh rotation
+  - **Matching**: Scored candidate discovery (interest overlap, intent alignment, recency, profile completeness), Haversine distance, vibe/retract, matching stats
+  - **Messaging**: Socket.io realtime messaging with read receipts
+  - **Rooms**: Group rooms with join/leave persistence
+  - **Payments**: Product catalog (MiXiT Premium, Vibe Boost, Super Vibe), subscribe/purchase, auto-expiry, cancellation
   - Room join/leave persistence
 
 ## Database Setup (Local)
@@ -52,20 +56,48 @@ GET http://localhost:4000/health
 ```text
 backend/src
 ├── modules
-│   ├── auth
-│   ├── profiles
-│   ├── matching
-│   ├── messaging
-│   ├── rooms
-│   └── payments
+│   ├── auth          — OTP phone auth + JWT token rotation
+│   ├── profiles      — CRUD with privacy, intents, traits, photos
+│   ├── matching      — Scored discover, vibe/retract, stats
+│   ├── messaging     — Conversations, threads, realtime via Socket.io
+│   ├── rooms         — Group rooms with join/leave
+│   └── payments      — Products, subscriptions, purchases
 ├── shared
-│   ├── config
-│   ├── db
-│   ├── middleware
-│   ├── realtime
-│   └── utils
+│   ├── cache         — Redis client
+│   ├── config        — Environment variables
+│   ├── db            — Prisma client
+│   ├── middleware     — Request ID, auth guard
+│   ├── realtime      — Socket.io server
+│   └── utils         — Logger
 └── server.ts
 ```
+
+## API Endpoints
+
+| Module | Method | Path | Description |
+|--------|--------|------|-------------|
+| Auth | POST | `/auth/request-otp` | Request OTP via SMS |
+| Auth | POST | `/auth/verify-otp` | Verify OTP, get tokens |
+| Auth | POST | `/auth/refresh` | Rotate refresh token |
+| Auth | POST | `/auth/logout` | Revoke refresh session |
+| Auth | GET | `/auth/me` | Get current user |
+| Profiles | GET | `/profiles/me` | Get my profile |
+| Profiles | PUT | `/profiles/me` | Create/update profile |
+| Matching | GET | `/matching/candidates` | Scored discover feed |
+| Matching | POST | `/matching/vibe` | Send a vibe |
+| Matching | DELETE | `/matching/vibe/:userId` | Retract a vibe |
+| Matching | GET | `/matching/vibes` | Received vibes |
+| Matching | GET | `/matching/stats` | Match statistics |
+| Messaging | GET | `/messaging/conversations` | Chat list |
+| Messaging | GET | `/messaging/thread/:peerUserId` | Message thread |
+| Messaging | POST | `/messaging/messages` | Send message |
+| Rooms | GET | `/rooms/list` | List rooms |
+| Rooms | POST | `/rooms/join/:roomId` | Join a room |
+| Rooms | DELETE | `/rooms/join/:roomId` | Leave a room |
+| Payments | GET | `/payments/products` | List products |
+| Payments | POST | `/payments/subscribe` | Purchase a product |
+| Payments | GET | `/payments/me` | My purchases |
+| Payments | DELETE | `/payments/me/:purchaseId` | Cancel purchase |
 
 ## Render One-Click Deploy
 

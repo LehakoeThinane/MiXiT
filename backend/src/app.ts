@@ -20,6 +20,8 @@ export function buildApp() {
     logger: {
       level: env.nodeEnv === 'production' ? 'info' : 'debug',
     },
+    bodyLimit: 15 * 1024 * 1024, // 15 MB — needed for base64 profile photos
+    requestTimeout: 30_000,
   });
 
   app.register(helmet);

@@ -36,6 +36,9 @@ backend/.env
 backend/.env.*
 !backend/.env.example
 
+# generated prisma client (regenerated on build)
+backend/src/generated/
+
 # typescript
 *.tsbuildinfo
 

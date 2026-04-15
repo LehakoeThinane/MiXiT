@@ -11,15 +11,17 @@ export default function TabLayout() {
       initialRouteName="discover"
       screenOptions={{
         tabBarActiveTintColor: '#ff6b35',
-        tabBarInactiveTintColor: '#838cb2',
+        tabBarInactiveTintColor: '#c3c9e0',
         headerShown: false,
         tabBarButton: HapticTab,
         tabBarStyle: {
-          backgroundColor: '#0b0d18',
-          borderTopColor: '#1d233b',
+          position: 'absolute',
+          backgroundColor: 'rgba(11, 13, 24, 0.68)',
+          borderTopColor: 'rgba(255,255,255,0.18)',
           height: Platform.OS === 'ios' ? 84 : 68,
           paddingBottom: Platform.OS === 'ios' ? 22 : 8,
           paddingTop: 6,
+          borderTopWidth: 1,
         },
         tabBarLabelStyle: {
           fontSize: 11,
@@ -59,12 +61,6 @@ export default function TabLayout() {
         options={{
           title: 'Profile',
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="person.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="explore"
-        options={{
-          href: null,
         }}
       />
     </Tabs>
