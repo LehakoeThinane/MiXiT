@@ -19,4 +19,11 @@ export const env = {
   atUsername: process.env.AT_USERNAME ?? '',
   atApiKey: process.env.AT_API_KEY ?? '',
   atSenderId: process.env.AT_SENDER_ID ?? '',
+  smsportalBaseUrl: process.env.SMSPORTAL_BASE_URL ?? 'https://rest.smsportal.com',
+  smsportalSendPath: process.env.SMSPORTAL_SEND_PATH ?? '/v3/BulkMessages',
+  smsportalAuthMode: process.env.SMSPORTAL_AUTH_MODE ?? 'basic',
+  smsportalClientId: process.env.SMSPORTAL_CLIENT_ID ?? '',
+  smsportalApiSecret: process.env.SMSPORTAL_API_SECRET ?? '',
+  smsportalBearerToken: process.env.SMSPORTAL_BEARER_TOKEN ?? '',
+  smsportalOriginator: process.env.SMSPORTAL_ORIGINATOR ?? '',
 };

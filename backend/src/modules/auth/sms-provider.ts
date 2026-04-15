@@ -45,12 +45,72 @@ class AfricasTalkingSmsSender implements SmsSender {
   }
 }
 
+class SmsPortalSender implements SmsSender {
+  private buildAuthorizationHeader() {
+    const mode = env.smsportalAuthMode.toLowerCase();
+
+    if (mode === 'bearer') {
+      if (!env.smsportalBearerToken) {
+        throw new Error('SMSPortal bearer token is missing');
+      }
+      return `Bearer ${env.smsportalBearerToken}`;
+    }
+
+    if (!env.smsportalClientId || !env.smsportalApiSecret) {
+      throw new Error('SMSPortal credentials are missing');
+    }
+    const credentials = Buffer.from(`${env.smsportalClientId}:${env.smsportalApiSecret}`).toString('base64');
+    return `Basic ${credentials}`;
+  }
+
+  async sendOtp(phone: string, code: string) {
+    const message = `Your MiXiT code is ${code}. Valid for 5 minutes.`;
+    const endpoint = new URL(env.smsportalSendPath, env.smsportalBaseUrl).toString();
+    const payload: {
+      messages: Array<{
+        content: string;
+        destination: string;
+        originator?: string;
+      }>;
+    } = {
+      messages: [
+        {
+          content: message,
+          destination: phone,
+        },
+      ],
+    };
+
+    if (env.smsportalOriginator) {
+      payload.messages[0].originator = env.smsportalOriginator;
+    }
+
+    const authorization = this.buildAuthorizationHeader();
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: authorization,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`SMSPortal SMS failed (${response.status}): ${text}`);
+    }
+  }
+}
+
 let smsSenderInstance: SmsSender | null = null;
 
 export function getSmsSender() {
   if (smsSenderInstance) return smsSenderInstance;
 
-  if (env.smsProvider === 'africastalking') {
+  const provider = env.smsProvider.toLowerCase();
+
+  if (provider === 'africastalking') {
     if (!env.atApiKey || !env.atUsername) {
       if (env.nodeEnv === 'production') {
         throw new Error('SMS provider is set to africastalking but credentials are missing');
@@ -61,6 +121,25 @@ export function getSmsSender() {
     }
 
     smsSenderInstance = new AfricasTalkingSmsSender();
+    return smsSenderInstance;
+  }
+
+  if (provider === 'smsportal') {
+    const authMode = env.smsportalAuthMode.toLowerCase();
+    const hasBasicCreds = Boolean(env.smsportalClientId && env.smsportalApiSecret);
+    const hasBearerToken = Boolean(env.smsportalBearerToken);
+    const credentialsMissing = authMode === 'bearer' ? !hasBearerToken : !hasBasicCreds;
+
+    if (credentialsMissing) {
+      if (env.nodeEnv === 'production') {
+        throw new Error('SMS provider is set to smsportal but credentials are missing for the selected auth mode');
+      }
+      logger.warn('SMSPortal credentials missing for selected auth mode, falling back to console SMS sender');
+      smsSenderInstance = new ConsoleSmsSender();
+      return smsSenderInstance;
+    }
+
+    smsSenderInstance = new SmsPortalSender();
     return smsSenderInstance;
   }
 
