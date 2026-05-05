@@ -1,5 +1,6 @@
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
 
 import authRoutes from './modules/auth/routes.js';
@@ -9,11 +10,12 @@ import paymentRoutes from './modules/payments/routes.js';
 import profileRoutes from './modules/profiles/routes.js';
 import roomsRoutes from './modules/rooms/routes.js';
 import { redis } from './shared/cache/redis.js';
+import type { RateLimitPluginOptions } from '@fastify/rate-limit';
 import { authenticateSupabaseToken, resolveBearerToken } from './shared/auth/supabase-auth.js';
 import { env } from './shared/config/env.js';
 import { prisma } from './shared/db/prisma.js';
 import { requestIdMiddleware } from './shared/middleware/request-id.js';
-import { initSocketServer } from './shared/realtime/socket.js';
+import { initSocketServer, closeSocketServer } from './shared/realtime/socket.js';
 
 export function buildApp() {
   const app = Fastify({
@@ -26,6 +28,16 @@ export function buildApp() {
 
   app.register(helmet);
   app.register(cors, { origin: env.corsOrigin });
+  app.register(rateLimit, {
+    global: true,
+    max: 200,
+    timeWindow: 60_000,
+    redis,
+    errorResponseBuilder: (_req, context) => ({
+      ok: false,
+      message: `Too many requests — try again in ${Math.ceil((context.ttl ?? 60_000) / 1000)}s.`,
+    }),
+  } satisfies RateLimitPluginOptions);
 
   app.addHook('onRequest', requestIdMiddleware);
   app.decorate('authenticate', async (request, reply) => {
@@ -58,12 +70,12 @@ export function buildApp() {
   app.register(messagingRoutes, { prefix: '/messaging' });
   app.register(roomsRoutes, { prefix: '/rooms' });
   app.register(paymentRoutes, { prefix: '/payments' });
-  app.register((instance, _opts, done) => {
-    initSocketServer(instance);
-    done();
+  app.register(async (instance) => {
+    await initSocketServer(instance);
   });
 
   app.addHook('onClose', async () => {
+    await closeSocketServer();
     await prisma.$disconnect().catch(() => {});
     if (redis.status !== 'end' && redis.status !== 'wait') {
       await redis.quit().catch(() => {});

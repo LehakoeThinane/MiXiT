@@ -91,7 +91,7 @@ function isInfrastructureError(error: unknown) {
 const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: RequestOtpBody }>(
     '/request-otp',
-    { schema: requestOtpSchema },
+    { schema: requestOtpSchema, config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } },
     async (req, reply) => {
       const phone = normalizePhone(req.body.phone);
       if (!isValidPhone(phone)) {
@@ -118,7 +118,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Body: VerifyOtpBody }>(
     '/verify-otp',
-    { schema: verifyOtpSchema },
+    { schema: verifyOtpSchema, config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
     async (req, reply) => {
       const phone = normalizePhone(req.body.phone);
       const code = req.body.code.trim();
@@ -174,7 +174,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{ Body: RefreshBody }>(
     '/refresh',
-    { schema: refreshSchema },
+    { schema: refreshSchema, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (req, reply) => {
       try {
         const session = await refreshSupabaseSession(req.body.refreshToken);

@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { sendPushNotification } from '../../shared/push/expo-push.js';
 import { getSocketServer } from '../../shared/realtime/socket.js';
 
 type SendMessageBody = {
@@ -144,6 +145,13 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
     const io = getSocketServer();
     io?.to(`user:${recipientId}`).emit('message:received', payload);
     io?.to(`user:${senderId}`).emit('message:sent', payload);
+
+    const [senderProfile, recipientProfile] = await Promise.all([
+      prisma.profile.findUnique({ where: { userId: senderId }, select: { displayName: true } }),
+      prisma.profile.findUnique({ where: { userId: recipientId }, select: { pushToken: true } }),
+    ]);
+    const preview = type === 'voice' ? 'Sent a voice note' : type === 'image' ? 'Sent a photo' : (content ?? '').slice(0, 100);
+    sendPushNotification(recipientProfile?.pushToken, senderProfile?.displayName ?? 'Someone', preview, { type: 'message', senderId }).catch(() => {});
 
     return { ok: true, message: payload };
   });

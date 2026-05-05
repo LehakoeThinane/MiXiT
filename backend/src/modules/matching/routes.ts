@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { sendPushNotification } from '../../shared/push/expo-push.js';
 
 // ---------------------------------------------------------------------------
 // Scoring helpers
@@ -184,7 +185,7 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
   // ---- Discover candidates (scored) ----
   fastify.get(
     '/candidates',
-    { preHandler: [fastify.authenticate] },
+    { preHandler: [fastify.authenticate], config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (req) => {
       const currentUserId = req.user.sub;
 
@@ -244,7 +245,7 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
   // ---- Send a vibe ----
   fastify.post<{
     Body: { toUserId: string };
-  }>('/vibe', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  }>('/vibe', { preHandler: [fastify.authenticate], config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req, reply) => {
     const fromUserId = req.user.sub;
     const { toUserId } = req.body;
 
@@ -295,6 +296,15 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
         },
         data: { matchedAt: now },
       });
+
+      const [fromProfile, toProfile] = await Promise.all([
+        prisma.profile.findUnique({ where: { userId: fromUserId }, select: { displayName: true, pushToken: true } }),
+        prisma.profile.findUnique({ where: { userId: toUserId }, select: { displayName: true, pushToken: true } }),
+      ]);
+      await Promise.all([
+        sendPushNotification(fromProfile?.pushToken, "It's a match!", `You and ${toProfile?.displayName ?? 'someone'} vibed each other`, { type: 'match', userId: toUserId }),
+        sendPushNotification(toProfile?.pushToken, "It's a match!", `You and ${fromProfile?.displayName ?? 'someone'} vibed each other`, { type: 'match', userId: fromUserId }),
+      ]);
     }
 
     return { ok: true, matched };

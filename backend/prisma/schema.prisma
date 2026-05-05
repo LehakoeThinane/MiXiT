@@ -45,6 +45,7 @@ model Profile {
   completedAt DateTime? @map("completed_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
   lastActive  DateTime? @map("last_active")
+  pushToken   String?  @map("push_token")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { getProfileCache, invalidateProfileCache, setProfileCache } from '../../shared/cache/profile-cache.js';
 import { createSignedUploadUrl } from '../../shared/storage/supabase-storage.js';
 
 type UpsertProfileBody = {
@@ -64,6 +65,9 @@ const profileSchema = {
 
 const profileRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/me', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const cached = await getProfileCache(req.user.sub);
+    if (cached) return cached;
+
     const [profile, roomsParticipated, user] = await Promise.all([
       prisma.profile.findUnique({
         where: { userId: req.user.sub },
@@ -81,7 +85,7 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(404).send({ ok: false, message: 'Profile not found' });
     }
 
-    return {
+    const result = {
       ok: true,
       profile,
       stats: {
@@ -89,6 +93,8 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
         roomsParticipated,
       },
     };
+    await setProfileCache(req.user.sub, result);
+    return result;
   });
 
   fastify.put<{ Body: UpsertProfileBody }>(
@@ -158,6 +164,8 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
         }),
       ]);
 
+      await invalidateProfileCache(req.user.sub);
+
       return {
         ok: true,
         profile,
@@ -168,10 +176,35 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
       };
     }
   );
+  fastify.put(
+    '/me/push-token',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        body: {
+          type: 'object',
+          required: ['token'],
+          properties: {
+            token: { type: 'string', minLength: 1, maxLength: 200 },
+          },
+        },
+      },
+    },
+    async (req) => {
+      const { token } = req.body as { token: string };
+      await prisma.profile.updateMany({
+        where: { userId: req.user.sub },
+        data: { pushToken: token },
+      });
+      return { ok: true };
+    }
+  );
+
   fastify.post(
     '/me/photo',
     {
       preHandler: [fastify.authenticate],
+      config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
       schema: {
         body: {
           type: 'object',

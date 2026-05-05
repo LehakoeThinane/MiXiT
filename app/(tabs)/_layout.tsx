@@ -1,11 +1,20 @@
 import { Tabs } from 'expo-router';
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Platform } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { registerForPushNotifications } from '@/lib/notifications';
+import { useAuthStore } from '@/stores/auth-store';
 
 export default function TabLayout() {
+  const accessToken = useAuthStore((state) => state.accessToken);
+
+  useEffect(() => {
+    if (accessToken) {
+      registerForPushNotifications();
+    }
+  }, [accessToken]);
   return (
     <Tabs
       initialRouteName="discover"
