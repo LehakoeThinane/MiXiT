@@ -104,7 +104,11 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
     '/request-otp',
     { schema: requestOtpSchema },
     async (req, reply) => {
-      await ensureRedisConnection();
+      try {
+        await ensureRedisConnection();
+      } catch {
+        return reply.code(503).send({ ok: false, message: 'Service temporarily unavailable. Please try again in a moment.' });
+      }
       let smsSender: ReturnType<typeof getSmsSender>;
       try {
         smsSender = getSmsSender();
@@ -163,7 +167,11 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
     '/verify-otp',
     { schema: verifyOtpSchema },
     async (req, reply) => {
-      await ensureRedisConnection();
+      try {
+        await ensureRedisConnection();
+      } catch {
+        return reply.code(503).send({ ok: false, message: 'Service temporarily unavailable. Please try again in a moment.' });
+      }
 
       const phone = normalizePhone(req.body.phone);
       const code = req.body.code.trim();
