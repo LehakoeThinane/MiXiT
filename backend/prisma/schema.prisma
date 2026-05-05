@@ -48,6 +48,9 @@ model Profile {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([completedAt, updatedAt(sort: Desc)])
+  @@index([city, completedAt, updatedAt(sort: Desc)])
+  @@index([lastActive(sort: Desc)])
   @@map("profiles")
 }
 
@@ -65,6 +68,7 @@ model Message {
   recipient User @relation("received_messages", fields: [recipientId], references: [id], onDelete: Cascade)
 
   @@index([senderId, recipientId, createdAt(sort: Desc)])
+  @@index([recipientId, createdAt(sort: Desc)])
   @@map("messages")
 }
 
@@ -79,7 +83,8 @@ model Vibe {
   toUser   User @relation("vibe_recipient", fields: [toUserId], references: [id], onDelete: Cascade)
 
   @@unique([fromUserId, toUserId])
-  @@index([toUserId, createdAt(sort: Desc)])
+  @@index([toUserId, matchedAt(sort: Desc), createdAt(sort: Desc)])
+  @@index([fromUserId, matchedAt])
   @@map("vibes")
 }
 

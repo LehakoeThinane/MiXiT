@@ -209,6 +209,7 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
       const profiles = await prisma.profile.findMany({
         where: {
           userId: { notIn: Array.from(excludedUserIds) },
+          completedAt: { not: null },
         },
         orderBy: { updatedAt: 'desc' },
         take: 40,
