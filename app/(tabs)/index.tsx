@@ -12,16 +12,16 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, API_BASE_URL } from '@/lib/api-client';
-import { getCurrentUser, requestOtp, verifyOtp } from '@/lib/auth-api';
+import { getCurrentUser, MOCK_OTP_CODE, requestOtp, verifyOtp } from '@/lib/auth-api';
 import { getMyProfile, upsertMyProfile } from '@/lib/profile-api';
 import { useAuthStore } from '@/stores/auth-store';
 
@@ -292,7 +292,7 @@ export default function ProfileTabScreen() {
   }, [profileQuery.data]);
 
   const requestOtpMutation = useMutation({
-    mutationFn: async (inputPhone: string) => requestOtp(inputPhone),
+    mutationFn: (inputPhone: string) => requestOtp(inputPhone),
     onSuccess: (payload) => {
       setStepError(null);
       setStep(2);
@@ -308,7 +308,7 @@ export default function ProfileTabScreen() {
   });
 
   const verifyOtpMutation = useMutation({
-    mutationFn: async ({ inputPhone, code }: { inputPhone: string; code: string }) =>
+    mutationFn: ({ inputPhone, code }: { inputPhone: string; code: string }) =>
       verifyOtp(inputPhone, code),
     onSuccess: async (payload) => {
       setStepError(null);
@@ -939,7 +939,11 @@ export default function ProfileTabScreen() {
           <Text style={styles.stepLabel}>Step {step} of 7</Text>
           <Text style={styles.title}>{stepTitle}</Text>
           <Text style={styles.caption}>
-            {__DEV__ ? `Backend: ${API_BASE_URL}` : 'Warm. Fast. Honest.'}
+            {__DEV__
+              ? process.env.EXPO_PUBLIC_MOCK_AUTH === 'true'
+                ? `Mock mode — OTP: ${MOCK_OTP_CODE}`
+                : `Backend: ${API_BASE_URL}`
+              : 'Warm. Fast. Honest.'}
           </Text>
           {showSessionRestoredBanner ? (
             <View style={styles.sessionBanner}>

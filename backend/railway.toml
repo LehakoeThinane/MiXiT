@@ -1,0 +1,10 @@
+[build]
+buildCommand = "corepack enable && corepack pnpm install --frozen-lockfile && corepack pnpm run build"
+
+[deploy]
+startCommand = "node dist/server.js"
+preDeployCommand = "node_modules/.bin/prisma migrate deploy"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
