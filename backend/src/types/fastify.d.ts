@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { AuthenticatedUser } from '../shared/auth/supabase-auth.js';
+import type { AuthenticatedUser } from '../shared/auth/jwt.js';
 
 declare module 'fastify' {
   interface FastifyInstance {

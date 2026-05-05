@@ -11,7 +11,7 @@ import profileRoutes from './modules/profiles/routes.js';
 import roomsRoutes from './modules/rooms/routes.js';
 import { redis } from './shared/cache/redis.js';
 import type { RateLimitPluginOptions } from '@fastify/rate-limit';
-import { authenticateSupabaseToken, resolveBearerToken } from './shared/auth/supabase-auth.js';
+import { extractBearerToken, verifyAccessToken } from './shared/auth/jwt.js';
 import { env } from './shared/config/env.js';
 import { prisma } from './shared/db/prisma.js';
 import { requestIdMiddleware } from './shared/middleware/request-id.js';
@@ -41,14 +41,14 @@ export function buildApp() {
 
   app.addHook('onRequest', requestIdMiddleware);
   app.decorate('authenticate', async (request, reply) => {
-    const token = resolveBearerToken(request.headers.authorization);
+    const token = extractBearerToken(request.headers.authorization);
     if (!token) {
       reply.code(401).send({ ok: false, message: 'Unauthorized' });
       return;
     }
 
     try {
-      request.user = await authenticateSupabaseToken(token);
+      request.user = verifyAccessToken(token);
     } catch {
       reply.code(401).send({ ok: false, message: 'Unauthorized' });
       return;

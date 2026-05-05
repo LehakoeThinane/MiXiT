@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
 import { getThreadMessages, sendMessage, type ThreadMessage } from '@/lib/messaging-api';
-import { connectSocket, disconnectSocket, getSocket } from '@/lib/socket-client';
+import { getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
 
 function formatTime(value: string) {
@@ -22,6 +22,7 @@ export default function ChatScreen() {
   const peerUserId = params.id ?? '';
   const { user, accessToken } = useAuthStore();
   const [draft, setDraft] = useState('');
+  const scrollRef = useRef<ScrollView>(null);
 
   const threadQuery = useQuery({
     queryKey: ['thread', peerUserId],
@@ -54,9 +55,10 @@ export default function ChatScreen() {
   });
 
   useEffect(() => {
-    if (!accessToken || !peerUserId) return;
+    if (!peerUserId) return;
+    const socket = getSocket();
+    if (!socket) return;
 
-    const socket = connectSocket(accessToken);
     const onReceived = (message: ThreadMessage) => {
       if (
         !(
@@ -66,7 +68,6 @@ export default function ChatScreen() {
       ) {
         return;
       }
-
       queryClient.setQueryData<ThreadMessage[]>(['thread', peerUserId], (current) => {
         const existing = current ?? [];
         if (existing.some((item) => item.id === message.id)) return existing;
@@ -81,14 +82,16 @@ export default function ChatScreen() {
     return () => {
       socket.off('message:received', onReceived);
       socket.off('message:sent', onReceived);
-      const activeSocket = getSocket();
-      if (activeSocket && activeSocket.listeners('message:received').length === 0) {
-        disconnectSocket();
-      }
     };
-  }, [accessToken, peerUserId, queryClient, user?.id]);
+  }, [peerUserId, queryClient, user?.id]);
 
   const canSend = useMemo(() => draft.trim().length > 0 && !sendMutation.isPending, [draft, sendMutation.isPending]);
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      scrollRef.current?.scrollToEnd({ animated: false });
+    }
+  }, [messages.length]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -108,7 +111,7 @@ export default function ChatScreen() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.messages}>
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.messages}>
         {threadQuery.isLoading ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>Loading messages...</Text>

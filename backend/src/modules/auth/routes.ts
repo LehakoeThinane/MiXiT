@@ -1,46 +1,30 @@
+import { randomInt } from 'crypto';
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
-import {
-  refreshSupabaseSession,
-  requestSupabaseOtp,
-  resolveAuthenticatedUser,
-  verifySupabaseOtp,
-} from '../../shared/auth/supabase-auth.js';
+import { env } from '../../shared/config/env.js';
 import { logger } from '../../shared/utils/logger.js';
+import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../shared/auth/jwt.js';
+import { getSmsSender } from './sms-provider.js';
+import {
+  deleteValue,
+  expireValue,
+  getTtl,
+  getValue,
+  incrementValue,
+  setValueWithExpiry,
+} from './otp-store.js';
 
-type RequestOtpBody = {
-  phone: string;
-};
-
-type VerifyOtpBody = {
-  phone: string;
-  code: string;
-};
-
-type RefreshBody = {
-  refreshToken: string;
-};
-
-type LogoutBody = {
-  refreshToken: string;
-};
-
-function normalizePhone(input: string) {
-  return input.replace(/\s+/g, '').trim();
-}
-
-function isValidPhone(phone: string) {
-  return /^\+?[1-9]\d{7,14}$/.test(phone);
-}
+type RequestOtpBody = { phone: string };
+type VerifyOtpBody = { phone: string; code: string };
+type RefreshBody = { refreshToken: string };
+type LogoutBody = { refreshToken: string };
 
 const requestOtpSchema = {
   body: {
     type: 'object',
     required: ['phone'],
-    properties: {
-      phone: { type: 'string', minLength: 8, maxLength: 20 },
-    },
+    properties: { phone: { type: 'string', minLength: 8, maxLength: 20 } },
   },
 } as const;
 
@@ -59,9 +43,7 @@ const refreshSchema = {
   body: {
     type: 'object',
     required: ['refreshToken'],
-    properties: {
-      refreshToken: { type: 'string', minLength: 16 },
-    },
+    properties: { refreshToken: { type: 'string', minLength: 16 } },
   },
 } as const;
 
@@ -69,24 +51,25 @@ const logoutSchema = {
   body: {
     type: 'object',
     required: ['refreshToken'],
-    properties: {
-      refreshToken: { type: 'string', minLength: 16 },
-    },
+    properties: { refreshToken: { type: 'string', minLength: 16 } },
   },
 } as const;
 
-async function resolveLocalAuthUser(accessToken: string) {
-  return resolveAuthenticatedUser(accessToken);
+function normalizePhone(input: string) {
+  return input.replace(/\s+/g, '').trim();
 }
 
-function isInfrastructureError(error: unknown) {
-  if (!(error instanceof Error)) return false;
-  return (
-    error.message.includes('Supabase Auth request failed') ||
-    error.message.includes('did not return a session') ||
-    error.message.includes('did not return a refreshed session')
-  );
+function isValidPhone(phone: string) {
+  return /^\+?[1-9]\d{7,14}$/.test(phone);
 }
+
+function generateOtpCode() {
+  return randomInt(0, 1_000_000).toString().padStart(6, '0');
+}
+
+function otpCodeKey(phone: string) { return `otp:code:${phone}`; }
+function otpAttemptsKey(phone: string) { return `otp:attempts:${phone}`; }
+function otpCooldownKey(phone: string) { return `otp:cooldown:${phone}`; }
 
 const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: RequestOtpBody }>(
@@ -98,21 +81,34 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
       }
 
-      try {
-        await requestSupabaseOtp(phone);
-        logger.info('Supabase OTP requested', { phone });
-
-        return {
-          ok: true,
-          message: 'OTP sent',
-        };
-      } catch (error) {
-        logger.error('Supabase OTP request failed', error);
-        return reply.code(500).send({
+      const cooldownTtl = await getTtl(otpCooldownKey(phone));
+      if (cooldownTtl > 0) {
+        return reply.code(429).send({
           ok: false,
-          message: error instanceof Error ? error.message : 'Failed to request OTP',
+          message: `Please wait ${cooldownTtl}s before requesting another code`,
         });
       }
+
+      const code = generateOtpCode();
+
+      await setValueWithExpiry(otpCodeKey(phone), env.otpTtlSeconds, code);
+      await setValueWithExpiry(otpCooldownKey(phone), env.otpResendCooldownSeconds, '1');
+      await deleteValue(otpAttemptsKey(phone));
+
+      try {
+        await getSmsSender().sendOtp(phone, code);
+      } catch (error) {
+        logger.error('SMS send failed', { phone, error });
+        return reply.code(500).send({ ok: false, message: 'Failed to send OTP — please try again' });
+      }
+
+      logger.info('OTP sent', { phone });
+
+      return {
+        ok: true,
+        message: 'OTP sent',
+        ...(env.nodeEnv !== 'production' && { debugCode: code }),
+      };
     }
   );
 
@@ -127,36 +123,53 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
       }
 
-      try {
-        const session = await verifySupabaseOtp(phone, code);
-        const localUser = await resolveLocalAuthUser(session.access_token);
-
-        logger.info('Supabase OTP verified', {
-          phone,
-          localUserId: localUser.sub,
-          supabaseUserId: localUser.supabaseUserId,
-        });
-
-        return {
-          ok: true,
-          user: {
-            id: localUser.sub,
-            phone: localUser.phone,
-          },
-          tokens: {
-            accessToken: session.access_token,
-            refreshToken: session.refresh_token,
-            tokenType: session.token_type ?? 'bearer',
-            expiresIn: String(session.expires_in ?? ''),
-          },
-        };
-      } catch (error) {
-        logger.warn('Supabase OTP verification failed', { phone, error });
-        if (isInfrastructureError(error)) {
-          return reply.code(500).send({ ok: false, message: 'Authentication service unavailable' });
-        }
-        return reply.code(401).send({ ok: false, message: 'Invalid or expired OTP' });
+      const storedCode = await getValue(otpCodeKey(phone));
+      if (!storedCode) {
+        return reply.code(401).send({ ok: false, message: 'OTP expired or not found' });
       }
+
+      const attemptsStr = await getValue(otpAttemptsKey(phone));
+      const attempts = attemptsStr ? Number(attemptsStr) : 0;
+
+      if (attempts >= env.otpMaxVerifyAttempts) {
+        await deleteValue(otpCodeKey(phone));
+        await deleteValue(otpAttemptsKey(phone));
+        return reply.code(429).send({ ok: false, message: 'Too many attempts — request a new code' });
+      }
+
+      if (code !== storedCode) {
+        const newCount = await incrementValue(otpAttemptsKey(phone));
+        if (newCount === 1) {
+          const codeTtl = await getTtl(otpCodeKey(phone));
+          if (codeTtl > 0) await expireValue(otpAttemptsKey(phone), codeTtl);
+        }
+        return reply.code(401).send({ ok: false, message: 'Invalid code' });
+      }
+
+      await deleteValue(otpCodeKey(phone));
+      await deleteValue(otpAttemptsKey(phone));
+      await deleteValue(otpCooldownKey(phone));
+
+      let user = await prisma.user.findUnique({ where: { phone } });
+      if (!user) {
+        user = await prisma.user.create({ data: { phone } });
+      }
+
+      logger.info('OTP verified', { phone, userId: user.id });
+
+      const accessToken = signAccessToken(user.id, user.phone);
+      const refreshToken = signRefreshToken(user.id);
+
+      return {
+        ok: true,
+        user: { id: user.id, phone: user.phone },
+        tokens: {
+          accessToken,
+          refreshToken,
+          tokenType: 'bearer',
+          expiresIn: '3600',
+        },
+      };
     }
   );
 
@@ -166,10 +179,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
       include: { profile: true },
     });
 
-    return {
-      ok: true,
-      user,
-    };
+    return { ok: true, user };
   });
 
   fastify.post<{ Body: RefreshBody }>(
@@ -177,25 +187,21 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
     { schema: refreshSchema, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (req, reply) => {
       try {
-        const session = await refreshSupabaseSession(req.body.refreshToken);
-        const localUser = await resolveLocalAuthUser(session.access_token);
+        const payload = verifyRefreshToken(req.body.refreshToken);
+        const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+        if (!user) {
+          return reply.code(401).send({ ok: false, message: 'User not found' });
+        }
 
         return {
           ok: true,
-          user: {
-            id: localUser.sub,
-            phone: localUser.phone,
-          },
+          user: { id: user.id, phone: user.phone },
           tokens: {
-            accessToken: session.access_token,
-            refreshToken: session.refresh_token,
+            accessToken: signAccessToken(user.id, user.phone),
+            refreshToken: signRefreshToken(user.id),
           },
         };
-      } catch (error) {
-        logger.warn('Supabase refresh failed', error);
-        if (isInfrastructureError(error)) {
-          return reply.code(500).send({ ok: false, message: 'Authentication service unavailable' });
-        }
+      } catch {
         return reply.code(401).send({ ok: false, message: 'Refresh token expired' });
       }
     }

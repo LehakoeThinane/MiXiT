@@ -5,6 +5,7 @@ import { Platform } from 'react-native';
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { registerForPushNotifications } from '@/lib/notifications';
+import { connectSocket, disconnectSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
 
 export default function TabLayout() {
@@ -12,8 +13,15 @@ export default function TabLayout() {
 
   useEffect(() => {
     if (accessToken) {
+      connectSocket(accessToken);
       registerForPushNotifications();
+    } else {
+      disconnectSocket();
     }
+    return () => {
+      // only disconnect when layout unmounts (app close / sign-out navigation)
+      disconnectSocket();
+    };
   }, [accessToken]);
   return (
     <Tabs

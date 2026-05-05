@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 
 import { ensureRedisConnection, redis } from '../cache/redis.js';
-import { authenticateSupabaseToken, resolveBearerToken } from '../auth/supabase-auth.js';
+import { extractBearerToken, verifyAccessToken } from '../auth/jwt.js';
 import { env } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
 import { sendPushNotification } from '../push/expo-push.js';
@@ -16,7 +16,7 @@ let adapterSub: Redis | null = null;
 
 function resolveTokenFromHandshake(authHeader: string | string[] | undefined, authToken?: unknown) {
   if (typeof authToken === 'string' && authToken.trim()) return authToken.trim();
-  return resolveBearerToken(authHeader);
+  return extractBearerToken(authHeader);
 }
 
 export async function initSocketServer(app: FastifyInstance) {
@@ -54,9 +54,8 @@ export async function initSocketServer(app: FastifyInstance) {
       );
       if (!token) return next(new Error('Unauthorized'));
 
-      const authUser = await authenticateSupabaseToken(token);
+      const authUser = verifyAccessToken(token);
       socket.data.userId = authUser.sub;
-      socket.data.supabaseUserId = authUser.supabaseUserId;
       next();
     } catch {
       next(new Error('Unauthorized'));

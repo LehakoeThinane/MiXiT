@@ -65,6 +65,7 @@ export const env = {
   redisUrl: validateRedisUrl(process.env.REDIS_URL ?? 'redis://localhost:6379'),
   supabaseUrl: validateSupabaseUrl(process.env.SUPABASE_URL ?? ''),
   supabaseAnonKey: validateSupabaseAnonKey(process.env.SUPABASE_ANON_KEY ?? ''),
+  jwtSecret: process.env.JWT_SECRET?.trim() || 'dev-jwt-secret-do-not-use-in-production',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? '',
   otpTtlSeconds: Number(process.env.OTP_TTL_SECONDS ?? 300),
   otpResendCooldownSeconds: Number(process.env.OTP_RESEND_COOLDOWN_SECONDS ?? 60),

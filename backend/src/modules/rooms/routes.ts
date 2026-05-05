@@ -27,9 +27,9 @@ async function ensureSeedRooms() {
 }
 
 const roomsRoutes: FastifyPluginAsync = async (fastify) => {
-  fastify.get('/list', { preHandler: [fastify.authenticate] }, async (req) => {
-    await ensureSeedRooms();
+  ensureSeedRooms().catch(() => {});
 
+  fastify.get('/list', { preHandler: [fastify.authenticate] }, async (req) => {
     const currentUserId = req.user.sub;
     const rooms = await prisma.room.findMany({
       include: {
