@@ -45,6 +45,8 @@ async function start() {
       corsOrigin: env.corsOrigin,
       databaseUrl: maskUrl(env.databaseUrl),
       redisUrl: maskUrl(env.redisUrl),
+      supabaseUrl: maskUrl(env.supabaseUrl),
+      supabaseAnonKey: env.supabaseAnonKey ? maskSecret(env.supabaseAnonKey) : '(missing)',
       smsProvider: env.smsProvider,
       atUsername: env.atUsername ? maskSecret(env.atUsername) : '(missing)',
       atApiKey: env.atApiKey ? maskSecret(env.atApiKey) : '(missing)',

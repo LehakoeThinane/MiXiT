@@ -2,19 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import { Server } from 'socket.io';
 
 import { ensureRedisConnection, redis } from '../cache/redis.js';
+import { authenticateSupabaseToken, resolveBearerToken } from '../auth/supabase-auth.js';
 import { prisma } from '../db/prisma.js';
 
 let io: Server | null = null;
 
 function resolveTokenFromHandshake(authHeader: string | string[] | undefined, authToken?: unknown) {
   if (typeof authToken === 'string' && authToken.trim()) return authToken.trim();
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    return authHeader.slice('Bearer '.length).trim();
-  }
-  if (Array.isArray(authHeader) && authHeader[0]?.startsWith('Bearer ')) {
-    return authHeader[0].slice('Bearer '.length).trim();
-  }
-  return null;
+  return resolveBearerToken(authHeader);
 }
 
 export function initSocketServer(app: FastifyInstance) {
@@ -35,14 +30,9 @@ export function initSocketServer(app: FastifyInstance) {
       );
       if (!token) return next(new Error('Unauthorized'));
 
-      const payload = await app.jwt.verify<{ sub: string; phone: string; type: 'access' | 'refresh' }>(
-        token
-      );
-      if (!payload?.sub || payload.type !== 'access') {
-        return next(new Error('Unauthorized'));
-      }
-
-      socket.data.userId = payload.sub;
+      const authUser = await authenticateSupabaseToken(token);
+      socket.data.userId = authUser.sub;
+      socket.data.supabaseUserId = authUser.supabaseUserId;
       next();
     } catch {
       next(new Error('Unauthorized'));

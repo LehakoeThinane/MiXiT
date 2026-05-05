@@ -1,20 +1,13 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { randomInt } from 'node:crypto';
 
-import { ensureRedisConnection } from '../../shared/cache/redis.js';
-import { env } from '../../shared/config/env.js';
 import { prisma } from '../../shared/db/prisma.js';
-import { logger } from '../../shared/utils/logger.js';
-import { getSmsSender } from './sms-provider.js';
 import {
-  deleteValue,
-  expireValue,
-  getTtl,
-  getValue,
-  incrementValue,
-  setValueWithExpiry,
-} from './otp-store.js';
-import { hashToken, issueTokenPair, rotateRefreshToken } from './token-service.js';
+  refreshSupabaseSession,
+  requestSupabaseOtp,
+  resolveAuthenticatedUser,
+  verifySupabaseOtp,
+} from '../../shared/auth/supabase-auth.js';
+import { logger } from '../../shared/utils/logger.js';
 
 type RequestOtpBody = {
   phone: string;
@@ -39,31 +32,6 @@ function normalizePhone(input: string) {
 
 function isValidPhone(phone: string) {
   return /^\+?[1-9]\d{7,14}$/.test(phone);
-}
-
-function otpKey(phone: string) {
-  return `otp:code:${phone}`;
-}
-
-function otpRateKey(phone: string) {
-  return `otp:rate:${phone}`;
-}
-
-function otpCooldownKey(phone: string) {
-  return `otp:cooldown:${phone}`;
-}
-
-function otpAttemptsKey(phone: string) {
-  return `otp:attempts:${phone}`;
-}
-
-function generateOtp() {
-  return randomInt(100000, 1000000).toString();
-}
-
-function resolveUserAgent(input: string | string[] | undefined) {
-  if (Array.isArray(input)) return input[0] ?? null;
-  return input ?? null;
 }
 
 const requestOtpSchema = {
@@ -107,60 +75,44 @@ const logoutSchema = {
   },
 } as const;
 
+async function resolveLocalAuthUser(accessToken: string) {
+  return resolveAuthenticatedUser(accessToken);
+}
+
+function isInfrastructureError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.includes('Supabase Auth request failed') ||
+    error.message.includes('did not return a session') ||
+    error.message.includes('did not return a refreshed session')
+  );
+}
+
 const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: RequestOtpBody }>(
     '/request-otp',
     { schema: requestOtpSchema },
     async (req, reply) => {
-      void ensureRedisConnection().catch(() => {});
-      let smsSender: ReturnType<typeof getSmsSender>;
-      try {
-        smsSender = getSmsSender();
-      } catch (error) {
-        logger.error('SMS sender setup failed', error);
-        return reply.code(500).send({ ok: false, message: 'SMS provider is not configured' });
-      }
-
       const phone = normalizePhone(req.body.phone);
       if (!isValidPhone(phone)) {
         return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
       }
-      const cooldownKey = otpCooldownKey(phone);
-      const cooldownRemaining = await getTtl(cooldownKey);
-      if (cooldownRemaining > 0) {
-        return reply.code(429).send({
+
+      try {
+        await requestSupabaseOtp(phone);
+        logger.info('Supabase OTP requested', { phone });
+
+        return {
+          ok: true,
+          message: 'OTP sent',
+        };
+      } catch (error) {
+        logger.error('Supabase OTP request failed', error);
+        return reply.code(500).send({
           ok: false,
-          message: `Please wait ${cooldownRemaining}s before requesting another code.`,
+          message: error instanceof Error ? error.message : 'Failed to request OTP',
         });
       }
-
-      const rateKey = otpRateKey(phone);
-      const requestCount = await incrementValue(rateKey);
-      if (requestCount === 1) {
-        await expireValue(rateKey, env.otpRequestWindowSeconds);
-      }
-      if (requestCount > env.otpMaxRequestsPerWindow) {
-        return reply.code(429).send({ ok: false, message: 'Too many OTP requests. Try again soon.' });
-      }
-
-      const code = generateOtp();
-      await setValueWithExpiry(otpKey(phone), env.otpTtlSeconds, code);
-      await deleteValue(otpAttemptsKey(phone));
-      await setValueWithExpiry(cooldownKey, env.otpResendCooldownSeconds, '1');
-
-      void smsSender.sendOtp(phone, code).catch(async (error) => {
-        logger.error('Failed to send OTP', error);
-        await deleteValue(otpKey(phone)).catch(() => {});
-        await deleteValue(cooldownKey).catch(() => {});
-      });
-
-      logger.info('OTP generated', { phone });
-
-      return {
-        ok: true,
-        message: 'OTP sent',
-        ...(env.nodeEnv !== 'production' ? { debugCode: code } : {}),
-      };
     }
   );
 
@@ -168,8 +120,6 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
     '/verify-otp',
     { schema: verifyOtpSchema },
     async (req, reply) => {
-      void ensureRedisConnection().catch(() => {});
-
       const phone = normalizePhone(req.body.phone);
       const code = req.body.code.trim();
 
@@ -177,50 +127,36 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
       }
 
-      const stored = await getValue(otpKey(phone));
-      if (!stored) {
+      try {
+        const session = await verifySupabaseOtp(phone, code);
+        const localUser = await resolveLocalAuthUser(session.access_token);
+
+        logger.info('Supabase OTP verified', {
+          phone,
+          localUserId: localUser.sub,
+          supabaseUserId: localUser.supabaseUserId,
+        });
+
+        return {
+          ok: true,
+          user: {
+            id: localUser.sub,
+            phone: localUser.phone,
+          },
+          tokens: {
+            accessToken: session.access_token,
+            refreshToken: session.refresh_token,
+            tokenType: session.token_type ?? 'bearer',
+            expiresIn: String(session.expires_in ?? ''),
+          },
+        };
+      } catch (error) {
+        logger.warn('Supabase OTP verification failed', { phone, error });
+        if (isInfrastructureError(error)) {
+          return reply.code(500).send({ ok: false, message: 'Authentication service unavailable' });
+        }
         return reply.code(401).send({ ok: false, message: 'Invalid or expired OTP' });
       }
-
-      const attemptsKey = otpAttemptsKey(phone);
-      const attemptCount = await incrementValue(attemptsKey);
-      if (attemptCount === 1) {
-        await expireValue(attemptsKey, env.otpTtlSeconds);
-      }
-      if (attemptCount > env.otpMaxVerifyAttempts) {
-        await deleteValue(otpKey(phone));
-        await deleteValue(attemptsKey);
-        await deleteValue(otpCooldownKey(phone));
-        return reply.code(429).send({ ok: false, message: 'Too many attempts. Request a new OTP.' });
-      }
-
-      if (stored !== code) {
-        return reply.code(401).send({ ok: false, message: 'Invalid or expired OTP' });
-      }
-
-      await deleteValue(otpKey(phone));
-      await deleteValue(attemptsKey);
-      await deleteValue(otpCooldownKey(phone));
-
-      const user = await prisma.user.upsert({
-        where: { phone },
-        update: {},
-        create: { phone },
-      });
-
-      const tokens = await issueTokenPair(reply, user, {
-        userAgent: resolveUserAgent(req.headers['user-agent']),
-        ipAddress: req.ip ?? null,
-      });
-
-      return {
-        ok: true,
-        user: {
-          id: user.id,
-          phone: user.phone,
-        },
-        tokens,
-      };
     }
   );
 
@@ -241,36 +177,25 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
     { schema: refreshSchema },
     async (req, reply) => {
       try {
-        const payload = await fastify.jwt.verify<{
-          sub: string;
-          phone: string;
-          type: 'access' | 'refresh';
-          sid?: string;
-        }>(req.body.refreshToken);
-
-        if (payload.type !== 'refresh' || !payload.sid) {
-          return reply.code(401).send({ ok: false, message: 'Invalid refresh token' });
-        }
-
-        const user = await prisma.user.findUnique({ where: { id: payload.sub } });
-        if (!user) {
-          return reply.code(401).send({ ok: false, message: 'User not found' });
-        }
-
-        const tokens = await rotateRefreshToken(reply, user, payload.sid, req.body.refreshToken, {
-          userAgent: resolveUserAgent(req.headers['user-agent']),
-          ipAddress: req.ip ?? null,
-        });
+        const session = await refreshSupabaseSession(req.body.refreshToken);
+        const localUser = await resolveLocalAuthUser(session.access_token);
 
         return {
           ok: true,
           user: {
-            id: user.id,
-            phone: user.phone,
+            id: localUser.sub,
+            phone: localUser.phone,
           },
-          tokens,
+          tokens: {
+            accessToken: session.access_token,
+            refreshToken: session.refresh_token,
+          },
         };
-      } catch {
+      } catch (error) {
+        logger.warn('Supabase refresh failed', error);
+        if (isInfrastructureError(error)) {
+          return reply.code(500).send({ ok: false, message: 'Authentication service unavailable' });
+        }
         return reply.code(401).send({ ok: false, message: 'Refresh token expired' });
       }
     }
@@ -279,34 +204,8 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: LogoutBody }>(
     '/logout',
     { schema: logoutSchema },
-    async (req, reply) => {
-      try {
-        const payload = await fastify.jwt.verify<{
-          sub: string;
-          type: 'access' | 'refresh';
-          sid?: string;
-        }>(req.body.refreshToken);
-
-        if (payload.type !== 'refresh' || !payload.sid) {
-          return reply.code(401).send({ ok: false, message: 'Invalid refresh token' });
-        }
-
-        await prisma.refreshSession.updateMany({
-          where: {
-            id: payload.sid,
-            userId: payload.sub,
-            tokenHash: hashToken(req.body.refreshToken),
-            revokedAt: null,
-          },
-          data: {
-            revokedAt: new Date(),
-          },
-        });
-
-        return { ok: true };
-      } catch {
-        return reply.code(401).send({ ok: false, message: 'Invalid refresh token' });
-      }
+    async (_req) => {
+      return { ok: true };
     }
   );
 };

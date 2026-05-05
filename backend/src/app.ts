@@ -1,6 +1,5 @@
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
-import jwt from '@fastify/jwt';
 import Fastify from 'fastify';
 
 import authRoutes from './modules/auth/routes.js';
@@ -10,6 +9,7 @@ import paymentRoutes from './modules/payments/routes.js';
 import profileRoutes from './modules/profiles/routes.js';
 import roomsRoutes from './modules/rooms/routes.js';
 import { redis } from './shared/cache/redis.js';
+import { authenticateSupabaseToken, resolveBearerToken } from './shared/auth/supabase-auth.js';
 import { env } from './shared/config/env.js';
 import { prisma } from './shared/db/prisma.js';
 import { requestIdMiddleware } from './shared/middleware/request-id.js';
@@ -26,11 +26,21 @@ export function buildApp() {
 
   app.register(helmet);
   app.register(cors, { origin: env.corsOrigin });
-  app.register(jwt, { secret: env.jwtSecret });
 
   app.addHook('onRequest', requestIdMiddleware);
-  app.decorate('authenticate', async (request) => {
-    await request.jwtVerify();
+  app.decorate('authenticate', async (request, reply) => {
+    const token = resolveBearerToken(request.headers.authorization);
+    if (!token) {
+      reply.code(401).send({ ok: false, message: 'Unauthorized' });
+      return;
+    }
+
+    try {
+      request.user = await authenticateSupabaseToken(token);
+    } catch {
+      reply.code(401).send({ ok: false, message: 'Unauthorized' });
+      return;
+    }
   });
 
   app.get('/health', async () => {

@@ -32,6 +32,30 @@ function validateRedisUrl(input: string) {
   return value;
 }
 
+function validateSupabaseUrl(input: string) {
+  const value = input.trim();
+
+  if (!value) {
+    throw new Error('SUPABASE_URL is required');
+  }
+
+  if (!/^https:\/\//i.test(value)) {
+    throw new Error('SUPABASE_URL must be an https:// URL');
+  }
+
+  return value.replace(/\/+$/, '');
+}
+
+function validateSupabaseAnonKey(input: string) {
+  const value = input.trim();
+
+  if (!value) {
+    throw new Error('SUPABASE_ANON_KEY is required');
+  }
+
+  return value;
+}
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   host: process.env.HOST ?? '0.0.0.0',
@@ -39,6 +63,8 @@ export const env = {
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
   databaseUrl: validateDatabaseUrl(process.env.DATABASE_URL ?? ''),
   redisUrl: validateRedisUrl(process.env.REDIS_URL ?? 'redis://localhost:6379'),
+  supabaseUrl: validateSupabaseUrl(process.env.SUPABASE_URL ?? ''),
+  supabaseAnonKey: validateSupabaseAnonKey(process.env.SUPABASE_ANON_KEY ?? ''),
   jwtSecret: process.env.JWT_SECRET ?? 'dev-only-change-me',
   jwtAccessTtl: process.env.JWT_ACCESS_TTL ?? '15m',
   jwtRefreshTtl: process.env.JWT_REFRESH_TTL ?? '30d',
