@@ -1,12 +1,44 @@
 import 'dotenv/config';
 
+function validateDatabaseUrl(input: string) {
+  const value = input.trim();
+
+  if (!value) {
+    throw new Error('DATABASE_URL is required');
+  }
+
+  if (/^https?:\/\//i.test(value)) {
+    throw new Error('DATABASE_URL must be a Postgres connection string, not a Supabase project URL');
+  }
+
+  if (!/^postgres(ql)?:\/\//i.test(value)) {
+    throw new Error('DATABASE_URL must start with postgresql:// or postgres://');
+  }
+
+  return value;
+}
+
+function validateRedisUrl(input: string) {
+  const value = input.trim();
+
+  if (!value) {
+    throw new Error('REDIS_URL is required');
+  }
+
+  if (!/^(redis|rediss):\/\//i.test(value)) {
+    throw new Error('REDIS_URL must start with redis:// or rediss://');
+  }
+
+  return value;
+}
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   host: process.env.HOST ?? '0.0.0.0',
   port: Number(process.env.PORT ?? 4000),
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
-  databaseUrl: process.env.DATABASE_URL ?? '',
-  redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
+  databaseUrl: validateDatabaseUrl(process.env.DATABASE_URL ?? ''),
+  redisUrl: validateRedisUrl(process.env.REDIS_URL ?? 'redis://localhost:6379'),
   jwtSecret: process.env.JWT_SECRET ?? 'dev-only-change-me',
   jwtAccessTtl: process.env.JWT_ACCESS_TTL ?? '15m',
   jwtRefreshTtl: process.env.JWT_REFRESH_TTL ?? '30d',
