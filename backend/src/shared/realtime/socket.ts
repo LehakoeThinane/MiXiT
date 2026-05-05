@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { Server } from 'socket.io';
 
-import { redis } from '../cache/redis.js';
+import { ensureRedisConnection, redis } from '../cache/redis.js';
 import { prisma } from '../db/prisma.js';
 
 let io: Server | null = null;
@@ -53,7 +53,12 @@ export function initSocketServer(app: FastifyInstance) {
     const userId = socket.data.userId as string;
     socket.join(`user:${userId}`);
 
-    await redis.setex(`presence:${userId}`, 300, 'online');
+    try {
+      await ensureRedisConnection();
+      await redis.setex(`presence:${userId}`, 300, 'online');
+    } catch {
+      // presence tracking unavailable — non-fatal
+    }
     await prisma.profile.updateMany({
       where: { userId },
       data: { lastActive: new Date() },
@@ -86,7 +91,11 @@ export function initSocketServer(app: FastifyInstance) {
     });
 
     socket.on('disconnect', async () => {
-      await redis.del(`presence:${userId}`);
+      try {
+        await redis.del(`presence:${userId}`);
+      } catch {
+        // ignore — presence cleanup is best-effort
+      }
     });
   });
 
