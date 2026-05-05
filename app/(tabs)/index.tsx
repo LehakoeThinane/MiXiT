@@ -22,7 +22,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, API_BASE_URL } from '@/lib/api-client';
 import { getCurrentUser, requestOtp, verifyOtp } from '@/lib/auth-api';
-import { getMyProfile, upsertMyProfile } from '@/lib/profile-api';
+import { getMyProfile, requestPhotoUploadUrl, uploadPhotoToStorage, upsertMyProfile } from '@/lib/profile-api';
 import { useAuthStore } from '@/stores/auth-store';
 
 type Gender = 'male' | 'female' | 'homesexual';
@@ -166,6 +166,7 @@ export default function ProfileTabScreen() {
   const [selectedPhotos, setSelectedPhotos] = useState<string[]>([]);
   const [showPhone, setShowPhone] = useState(true);
   const [showLastSeen, setShowLastSeen] = useState(true);
+  const [uploadingPhotoIndex, setUploadingPhotoIndex] = useState<number | null>(null);
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -403,6 +404,8 @@ export default function ProfileTabScreen() {
   };
 
   const pickPhotoAt = async (index: number) => {
+    if (uploadingPhotoIndex !== null) return;
+
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Permission needed', 'Allow photo access to add profile images.');
@@ -413,25 +416,30 @@ export default function ProfileTabScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.6,
-      base64: true,
+      quality: 0.8,
+      base64: false,
     });
 
     if (result.canceled || !result.assets.length) return;
 
     const asset = result.assets[0];
-    const encoded =
-      asset.base64 && asset.mimeType
-        ? `data:${asset.mimeType};base64,${asset.base64}`
-        : asset.base64
-        ? `data:image/jpeg;base64,${asset.base64}`
-        : asset.uri;
+    const mimeType = asset.mimeType ?? 'image/jpeg';
+    const filename = asset.fileName ?? `photo-${Date.now()}.jpg`;
 
-    setSelectedPhotos((prev) => {
-      const next = [...prev];
-      next[index] = encoded;
-      return next.slice(0, 3);
-    });
+    setUploadingPhotoIndex(index);
+    try {
+      const { signedUrl, publicUrl } = await requestPhotoUploadUrl(filename, mimeType);
+      await uploadPhotoToStorage(signedUrl, asset.uri, mimeType);
+      setSelectedPhotos((prev) => {
+        const next = [...prev];
+        next[index] = publicUrl;
+        return next.slice(0, 3);
+      });
+    } catch {
+      Alert.alert('Upload failed', 'Could not upload photo. Please try again.');
+    } finally {
+      setUploadingPhotoIndex(null);
+    }
   };
 
   const removePhotoAt = (index: number) => {
@@ -755,14 +763,19 @@ export default function ProfileTabScreen() {
                 <View style={styles.mediaRow}>
                   {mediaItems.map((uri, index) => (
                     <View key={`${uri ?? 'slot-edit'}-${index}`} style={styles.mediaEditorCell}>
-                      <Pressable style={styles.mediaTile} onPress={() => pickPhotoAt(index)}>
-                        {uri ? (
+                      <Pressable
+                        style={styles.mediaTile}
+                        onPress={() => pickPhotoAt(index)}
+                        disabled={uploadingPhotoIndex !== null}>
+                        {uploadingPhotoIndex === index ? (
+                          <ActivityIndicator color="#ff6b35" />
+                        ) : uri ? (
                           <Image source={{ uri }} style={styles.mediaImage} contentFit="cover" />
                         ) : (
                           <Text style={styles.mediaPlaceholder}>Add photo</Text>
                         )}
                       </Pressable>
-                      {uri ? (
+                      {uri && uploadingPhotoIndex !== index ? (
                         <Pressable style={styles.mediaAction} onPress={() => removePhotoAt(index)}>
                           <Text style={styles.mediaActionText}>Remove</Text>
                         </Pressable>

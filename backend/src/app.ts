@@ -20,7 +20,7 @@ export function buildApp() {
     logger: {
       level: env.nodeEnv === 'production' ? 'info' : 'debug',
     },
-    bodyLimit: 15 * 1024 * 1024, // 15 MB — needed for base64 profile photos
+    bodyLimit: 1 * 1024 * 1024, // 1 MB — photos upload directly to Supabase Storage
     requestTimeout: 30_000,
   });
 

@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { createSignedUploadUrl } from '../../shared/storage/supabase-storage.js';
 
 type UpsertProfileBody = {
   displayName: string;
@@ -50,7 +51,7 @@ const profileSchema = {
       },
       photos: {
         type: 'array',
-        items: { type: 'string', minLength: 6, maxLength: 3000000 },
+        items: { type: 'string', minLength: 6, maxLength: 500 },
         maxItems: 3,
       },
       showPhone: { type: 'boolean' },
@@ -165,6 +166,34 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
           roomsParticipated,
         },
       };
+    }
+  );
+  fastify.post(
+    '/me/photo',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        body: {
+          type: 'object',
+          required: ['filename', 'mimeType'],
+          properties: {
+            filename: { type: 'string', minLength: 1, maxLength: 255 },
+            mimeType: { type: 'string', enum: ['image/jpeg', 'image/png', 'image/webp'] },
+            size: { type: 'integer', minimum: 1, maximum: 5242880 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { filename, mimeType } = req.body as { filename: string; mimeType: string; size?: number };
+
+      try {
+        const { signedUrl, publicUrl } = await createSignedUploadUrl(req.user.sub, filename);
+        return { ok: true, signedUrl, publicUrl };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to prepare photo upload';
+        return reply.code(500).send({ ok: false, message });
+      }
     }
   );
 };

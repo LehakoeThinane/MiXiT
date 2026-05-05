@@ -48,6 +48,38 @@ export async function getMyProfile() {
   }
 }
 
+type PhotoUploadUrlResponse = {
+  ok: boolean;
+  signedUrl: string;
+  publicUrl: string;
+};
+
+export async function requestPhotoUploadUrl(filename: string, mimeType: string): Promise<PhotoUploadUrlResponse> {
+  return apiRequest<PhotoUploadUrlResponse>('/profiles/me/photo', {
+    method: 'POST',
+    auth: true,
+    body: { filename, mimeType },
+  });
+}
+
+export async function uploadPhotoToStorage(signedUrl: string, fileUri: string, mimeType: string): Promise<void> {
+  const fileResponse = await fetch(fileUri);
+  if (!fileResponse.ok) throw new Error('Could not read local file');
+
+  const blob = await fileResponse.blob();
+
+  const upload = await fetch(signedUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': mimeType },
+    body: blob,
+  });
+
+  if (!upload.ok) {
+    const text = await upload.text().catch(() => '');
+    throw new Error(`Storage upload failed: ${upload.status} ${text}`);
+  }
+}
+
 export async function upsertMyProfile(input: {
   displayName: string;
   age: number;
