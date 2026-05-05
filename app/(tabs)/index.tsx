@@ -21,7 +21,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, API_BASE_URL } from '@/lib/api-client';
-import { getCurrentUser, MOCK_OTP_CODE, requestOtp, verifyOtp } from '@/lib/auth-api';
+import { getCurrentUser, requestOtp, verifyOtp } from '@/lib/auth-api';
 import { getMyProfile, upsertMyProfile } from '@/lib/profile-api';
 import { useAuthStore } from '@/stores/auth-store';
 
@@ -939,11 +939,7 @@ export default function ProfileTabScreen() {
           <Text style={styles.stepLabel}>Step {step} of 7</Text>
           <Text style={styles.title}>{stepTitle}</Text>
           <Text style={styles.caption}>
-            {__DEV__
-              ? process.env.EXPO_PUBLIC_MOCK_AUTH === 'true'
-                ? `Mock mode — OTP: ${MOCK_OTP_CODE}`
-                : `Backend: ${API_BASE_URL}`
-              : 'Warm. Fast. Honest.'}
+            {__DEV__ ? `Backend: ${API_BASE_URL}` : 'Warm. Fast. Honest.'}
           </Text>
           {showSessionRestoredBanner ? (
             <View style={styles.sessionBanner}>
