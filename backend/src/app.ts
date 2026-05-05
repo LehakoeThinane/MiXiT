@@ -54,9 +54,11 @@ export function buildApp() {
   });
 
   app.addHook('onClose', async () => {
-    await prisma.$disconnect();
-    if (redis.status !== 'end') {
-      await redis.quit();
+    await prisma.$disconnect().catch(() => {});
+    if (redis.status !== 'end' && redis.status !== 'wait') {
+      await redis.quit().catch(() => {});
+    } else {
+      redis.disconnect();
     }
   });
 
