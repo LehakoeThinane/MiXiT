@@ -1,11 +1,19 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { randomInt } from 'node:crypto';
 
-import { ensureRedisConnection, redis } from '../../shared/cache/redis.js';
+import { ensureRedisConnection } from '../../shared/cache/redis.js';
 import { env } from '../../shared/config/env.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { logger } from '../../shared/utils/logger.js';
 import { getSmsSender } from './sms-provider.js';
+import {
+  deleteValue,
+  expireValue,
+  getTtl,
+  getValue,
+  incrementValue,
+  setValueWithExpiry,
+} from './otp-store.js';
 import { hashToken, issueTokenPair, rotateRefreshToken } from './token-service.js';
 
 type RequestOtpBody = {
@@ -104,11 +112,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
     '/request-otp',
     { schema: requestOtpSchema },
     async (req, reply) => {
-      try {
-        await ensureRedisConnection();
-      } catch {
-        return reply.code(503).send({ ok: false, message: 'Service temporarily unavailable. Please try again in a moment.' });
-      }
+      void ensureRedisConnection().catch(() => {});
       let smsSender: ReturnType<typeof getSmsSender>;
       try {
         smsSender = getSmsSender();
@@ -122,7 +126,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
       }
       const cooldownKey = otpCooldownKey(phone);
-      const cooldownRemaining = await redis.ttl(cooldownKey);
+      const cooldownRemaining = await getTtl(cooldownKey);
       if (cooldownRemaining > 0) {
         return reply.code(429).send({
           ok: false,
@@ -131,27 +135,24 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const rateKey = otpRateKey(phone);
-      const requestCount = await redis.incr(rateKey);
+      const requestCount = await incrementValue(rateKey);
       if (requestCount === 1) {
-        await redis.expire(rateKey, env.otpRequestWindowSeconds);
+        await expireValue(rateKey, env.otpRequestWindowSeconds);
       }
       if (requestCount > env.otpMaxRequestsPerWindow) {
         return reply.code(429).send({ ok: false, message: 'Too many OTP requests. Try again soon.' });
       }
 
       const code = generateOtp();
-      await redis.setex(otpKey(phone), env.otpTtlSeconds, code);
-      await redis.del(otpAttemptsKey(phone));
-      await redis.setex(cooldownKey, env.otpResendCooldownSeconds, '1');
+      await setValueWithExpiry(otpKey(phone), env.otpTtlSeconds, code);
+      await deleteValue(otpAttemptsKey(phone));
+      await setValueWithExpiry(cooldownKey, env.otpResendCooldownSeconds, '1');
 
-      try {
-        await smsSender.sendOtp(phone, code);
-      } catch (error) {
-        await redis.del(otpKey(phone));
-        await redis.del(cooldownKey);
+      void smsSender.sendOtp(phone, code).catch(async (error) => {
         logger.error('Failed to send OTP', error);
-        return reply.code(502).send({ ok: false, message: 'Failed to send OTP. Please try again.' });
-      }
+        await deleteValue(otpKey(phone)).catch(() => {});
+        await deleteValue(cooldownKey).catch(() => {});
+      });
 
       logger.info('OTP generated', { phone });
 
@@ -167,11 +168,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
     '/verify-otp',
     { schema: verifyOtpSchema },
     async (req, reply) => {
-      try {
-        await ensureRedisConnection();
-      } catch {
-        return reply.code(503).send({ ok: false, message: 'Service temporarily unavailable. Please try again in a moment.' });
-      }
+      void ensureRedisConnection().catch(() => {});
 
       const phone = normalizePhone(req.body.phone);
       const code = req.body.code.trim();
@@ -180,20 +177,20 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
       }
 
-      const stored = await redis.get(otpKey(phone));
+      const stored = await getValue(otpKey(phone));
       if (!stored) {
         return reply.code(401).send({ ok: false, message: 'Invalid or expired OTP' });
       }
 
       const attemptsKey = otpAttemptsKey(phone);
-      const attemptCount = await redis.incr(attemptsKey);
+      const attemptCount = await incrementValue(attemptsKey);
       if (attemptCount === 1) {
-        await redis.expire(attemptsKey, env.otpTtlSeconds);
+        await expireValue(attemptsKey, env.otpTtlSeconds);
       }
       if (attemptCount > env.otpMaxVerifyAttempts) {
-        await redis.del(otpKey(phone));
-        await redis.del(attemptsKey);
-        await redis.del(otpCooldownKey(phone));
+        await deleteValue(otpKey(phone));
+        await deleteValue(attemptsKey);
+        await deleteValue(otpCooldownKey(phone));
         return reply.code(429).send({ ok: false, message: 'Too many attempts. Request a new OTP.' });
       }
 
@@ -201,9 +198,9 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(401).send({ ok: false, message: 'Invalid or expired OTP' });
       }
 
-      await redis.del(otpKey(phone));
-      await redis.del(attemptsKey);
-      await redis.del(otpCooldownKey(phone));
+      await deleteValue(otpKey(phone));
+      await deleteValue(attemptsKey);
+      await deleteValue(otpCooldownKey(phone));
 
       const user = await prisma.user.upsert({
         where: { phone },
