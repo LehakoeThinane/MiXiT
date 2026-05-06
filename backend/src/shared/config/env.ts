@@ -21,9 +21,7 @@ function validateDatabaseUrl(input: string) {
 function validateRedisUrl(input: string) {
   const value = input.trim();
 
-  if (!value) {
-    throw new Error('REDIS_URL is required');
-  }
+  if (!value) return ''; // Redis is optional — rate-limiter falls back to memory store
 
   if (!/^(redis|rediss):\/\//i.test(value)) {
     throw new Error('REDIS_URL must start with redis:// or rediss://');
@@ -47,7 +45,7 @@ export const env = {
   port: Number(process.env.PORT ?? 4000),
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
   databaseUrl: validateDatabaseUrl(process.env.DATABASE_URL ?? ''),
-  redisUrl: validateRedisUrl(process.env.REDIS_URL ?? 'redis://localhost:6379'),
+  redisUrl: validateRedisUrl(process.env.REDIS_URL ?? ''),
   supabaseUrl: validateSupabaseUrl(process.env.SUPABASE_URL ?? ''),
   supabaseAnonKey: process.env.SUPABASE_ANON_KEY?.trim() ?? '',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? '',

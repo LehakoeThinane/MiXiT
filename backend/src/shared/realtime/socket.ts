@@ -29,21 +29,27 @@ export async function initSocketServer(app: FastifyInstance) {
     pingInterval: 25_000,
   });
 
-  try {
-    const clientOpts = { lazyConnect: true, maxRetriesPerRequest: 1, connectTimeout: 5_000, commandTimeout: 3_000 };
-    adapterPub = new Redis(env.redisUrl, clientOpts);
-    adapterSub = new Redis(env.redisUrl, clientOpts);
-    await Promise.all([adapterPub.connect(), adapterSub.connect()]);
-    io.adapter(createAdapter(adapterPub, adapterSub));
-    logger.info('Socket.IO Redis adapter active — multi-instance messaging enabled');
-  } catch (error) {
-    logger.warn('Socket.IO Redis adapter unavailable — single-instance mode only', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    adapterPub?.disconnect();
-    adapterSub?.disconnect();
-    adapterPub = null;
-    adapterSub = null;
+  if (env.redisUrl) {
+    try {
+      const clientOpts = { lazyConnect: true, maxRetriesPerRequest: 1, connectTimeout: 5_000, commandTimeout: 3_000 };
+      adapterPub = new Redis(env.redisUrl, clientOpts);
+      adapterSub = new Redis(env.redisUrl, clientOpts);
+      adapterPub.on('error', () => {}); // suppress unhandled error events
+      adapterSub.on('error', () => {});
+      await Promise.all([adapterPub.connect(), adapterSub.connect()]);
+      io.adapter(createAdapter(adapterPub, adapterSub));
+      logger.info('Socket.IO Redis adapter active — multi-instance messaging enabled');
+    } catch (error) {
+      logger.warn('Socket.IO Redis adapter unavailable — single-instance mode only', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      adapterPub?.disconnect();
+      adapterSub?.disconnect();
+      adapterPub = null;
+      adapterSub = null;
+    }
+  } else {
+    logger.info('REDIS_URL not set — Socket.IO running in single-instance mode');
   }
 
   io.use(async (socket, next) => {

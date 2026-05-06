@@ -9,10 +9,10 @@ import messagingRoutes from './modules/messaging/routes.js';
 import paymentRoutes from './modules/payments/routes.js';
 import profileRoutes from './modules/profiles/routes.js';
 import roomsRoutes from './modules/rooms/routes.js';
-import { redis } from './shared/cache/redis.js';
 import type { RateLimitPluginOptions } from '@fastify/rate-limit';
 import { extractBearerToken, verifyAccessToken } from './shared/auth/jwt.js';
 import { env } from './shared/config/env.js';
+import { redis } from './shared/cache/redis.js';
 import { prisma } from './shared/db/prisma.js';
 import { requestIdMiddleware } from './shared/middleware/request-id.js';
 import { initSocketServer, closeSocketServer } from './shared/realtime/socket.js';
@@ -32,7 +32,6 @@ export function buildApp() {
     global: true,
     max: 200,
     timeWindow: 60_000,
-    redis,
     errorResponseBuilder: (_req, context) => ({
       ok: false,
       message: `Too many requests — try again in ${Math.ceil((context.ttl ?? 60_000) / 1000)}s.`,
