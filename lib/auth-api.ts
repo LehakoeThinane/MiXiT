@@ -5,13 +5,7 @@ export type AuthUser = {
   phone: string;
 };
 
-type RequestOtpResponse = {
-  ok: boolean;
-  message: string;
-  debugCode?: string;
-};
-
-type VerifyOtpResponse = {
+type AuthResponse = {
   ok: boolean;
   user: AuthUser;
   tokens: {
@@ -36,17 +30,17 @@ type MeResponse = {
   } | null;
 };
 
-export async function requestOtp(phone: string) {
-  return apiRequest<RequestOtpResponse>('/auth/request-otp', {
+export async function register(phone: string, password: string) {
+  return apiRequest<AuthResponse>('/auth/register', {
     method: 'POST',
-    body: { phone },
+    body: { phone, password },
   });
 }
 
-export async function verifyOtp(phone: string, code: string) {
-  return apiRequest<VerifyOtpResponse>('/auth/verify-otp', {
+export async function login(phone: string, password: string) {
+  return apiRequest<AuthResponse>('/auth/login', {
     method: 'POST',
-    body: { phone, code },
+    body: { phone, password },
   });
 }
 

@@ -1,40 +1,24 @@
-import { randomInt } from 'crypto';
+import bcrypt from 'bcryptjs';
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
-import { env } from '../../shared/config/env.js';
 import { logger } from '../../shared/utils/logger.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../shared/auth/jwt.js';
-import { getSmsSender } from './sms-provider.js';
-import {
-  deleteValue,
-  expireValue,
-  getTtl,
-  getValue,
-  incrementValue,
-  setValueWithExpiry,
-} from './otp-store.js';
 
-type RequestOtpBody = { phone: string };
-type VerifyOtpBody = { phone: string; code: string };
+const BCRYPT_ROUNDS = 10;
+
+type RegisterBody = { phone: string; password: string };
+type LoginBody = { phone: string; password: string };
 type RefreshBody = { refreshToken: string };
 type LogoutBody = { refreshToken: string };
 
-const requestOtpSchema = {
+const phonePasswordSchema = {
   body: {
     type: 'object',
-    required: ['phone'],
-    properties: { phone: { type: 'string', minLength: 8, maxLength: 20 } },
-  },
-} as const;
-
-const verifyOtpSchema = {
-  body: {
-    type: 'object',
-    required: ['phone', 'code'],
+    required: ['phone', 'password'],
     properties: {
       phone: { type: 'string', minLength: 8, maxLength: 20 },
-      code: { type: 'string', minLength: 6, maxLength: 6 },
+      password: { type: 'string', minLength: 6, maxLength: 100 },
     },
   },
 } as const;
@@ -56,119 +40,84 @@ const logoutSchema = {
 } as const;
 
 function normalizePhone(input: string) {
-  return input.replace(/\s+/g, '').trim();
+  let phone = input.replace(/\s+/g, '').trim();
+  // Convert South African local format (0xx) to international (+27xx)
+  if (/^0\d{9}$/.test(phone)) {
+    phone = '+27' + phone.slice(1);
+  }
+  return phone;
 }
 
 function isValidPhone(phone: string) {
   return /^\+?[1-9]\d{7,14}$/.test(phone);
 }
 
-function generateOtpCode() {
-  return randomInt(0, 1_000_000).toString().padStart(6, '0');
+function issueTokens(userId: string, phone: string) {
+  return {
+    accessToken: signAccessToken(userId, phone),
+    refreshToken: signRefreshToken(userId),
+    tokenType: 'bearer',
+    expiresIn: '3600',
+  };
 }
 
-function otpCodeKey(phone: string) { return `otp:code:${phone}`; }
-function otpAttemptsKey(phone: string) { return `otp:attempts:${phone}`; }
-function otpCooldownKey(phone: string) { return `otp:cooldown:${phone}`; }
-
 const authRoutes: FastifyPluginAsync = async (fastify) => {
-  fastify.post<{ Body: RequestOtpBody }>(
-    '/request-otp',
-    { schema: requestOtpSchema, config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } },
+  fastify.post<{ Body: RegisterBody }>(
+    '/register',
+    { schema: phonePasswordSchema, config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
     async (req, reply) => {
       const phone = normalizePhone(req.body.phone);
-      if (!isValidPhone(phone)) {
-        return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
-      }
-
-      const cooldownTtl = await getTtl(otpCooldownKey(phone));
-      if (cooldownTtl > 0) {
-        return reply.code(429).send({
-          ok: false,
-          message: `Please wait ${cooldownTtl}s before requesting another code`,
-        });
-      }
-
-      const code = generateOtpCode();
-
-      await setValueWithExpiry(otpCodeKey(phone), env.otpTtlSeconds, code);
-      await setValueWithExpiry(otpCooldownKey(phone), env.otpResendCooldownSeconds, '1');
-      await deleteValue(otpAttemptsKey(phone));
-
-      try {
-        await getSmsSender().sendOtp(phone, code);
-      } catch (error) {
-        logger.error('SMS send failed', { phone, error });
-        return reply.code(500).send({ ok: false, message: 'Failed to send OTP — please try again' });
-      }
-
-      logger.info('OTP sent', { phone });
-
-      return {
-        ok: true,
-        message: 'OTP sent',
-        ...(env.nodeEnv !== 'production' && { debugCode: code }),
-      };
-    }
-  );
-
-  fastify.post<{ Body: VerifyOtpBody }>(
-    '/verify-otp',
-    { schema: verifyOtpSchema, config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
-    async (req, reply) => {
-      const phone = normalizePhone(req.body.phone);
-      const code = req.body.code.trim();
+      const { password } = req.body;
 
       if (!isValidPhone(phone)) {
         return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
       }
 
-      const storedCode = await getValue(otpCodeKey(phone));
-      if (!storedCode) {
-        return reply.code(401).send({ ok: false, message: 'OTP expired or not found' });
+      const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+      const existing = await prisma.user.findUnique({ where: { phone } });
+
+      if (existing?.passwordHash) {
+        return reply.code(409).send({ ok: false, message: 'Phone already registered — sign in instead' });
       }
 
-      const attemptsStr = await getValue(otpAttemptsKey(phone));
-      const attempts = attemptsStr ? Number(attemptsStr) : 0;
+      const user = existing
+        ? await prisma.user.update({ where: { id: existing.id }, data: { passwordHash } })
+        : await prisma.user.create({ data: { phone, passwordHash } });
 
-      if (attempts >= env.otpMaxVerifyAttempts) {
-        await deleteValue(otpCodeKey(phone));
-        await deleteValue(otpAttemptsKey(phone));
-        return reply.code(429).send({ ok: false, message: 'Too many attempts — request a new code' });
-      }
-
-      if (code !== storedCode) {
-        const newCount = await incrementValue(otpAttemptsKey(phone));
-        if (newCount === 1) {
-          const codeTtl = await getTtl(otpCodeKey(phone));
-          if (codeTtl > 0) await expireValue(otpAttemptsKey(phone), codeTtl);
-        }
-        return reply.code(401).send({ ok: false, message: 'Invalid code' });
-      }
-
-      await deleteValue(otpCodeKey(phone));
-      await deleteValue(otpAttemptsKey(phone));
-      await deleteValue(otpCooldownKey(phone));
-
-      let user = await prisma.user.findUnique({ where: { phone } });
-      if (!user) {
-        user = await prisma.user.create({ data: { phone } });
-      }
-
-      logger.info('OTP verified', { phone, userId: user.id });
-
-      const accessToken = signAccessToken(user.id, user.phone);
-      const refreshToken = signRefreshToken(user.id);
+      logger.info('User registered', { userId: user.id });
 
       return {
         ok: true,
         user: { id: user.id, phone: user.phone },
-        tokens: {
-          accessToken,
-          refreshToken,
-          tokenType: 'bearer',
-          expiresIn: '3600',
-        },
+        tokens: issueTokens(user.id, user.phone),
+      };
+    }
+  );
+
+  fastify.post<{ Body: LoginBody }>(
+    '/login',
+    { schema: phonePasswordSchema, config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
+    async (req, reply) => {
+      const phone = normalizePhone(req.body.phone);
+      const { password } = req.body;
+
+      if (!isValidPhone(phone)) {
+        return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
+      }
+
+      const user = await prisma.user.findUnique({ where: { phone } });
+      const isValid = user?.passwordHash ? await bcrypt.compare(password, user.passwordHash) : false;
+
+      if (!user || !isValid) {
+        return reply.code(401).send({ ok: false, message: 'Invalid phone or password' });
+      }
+
+      logger.info('User logged in', { userId: user.id });
+
+      return {
+        ok: true,
+        user: { id: user.id, phone: user.phone },
+        tokens: issueTokens(user.id, user.phone),
       };
     }
   );
@@ -178,7 +127,6 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
       where: { id: req.user.sub },
       include: { profile: true },
     });
-
     return { ok: true, user };
   });
 
@@ -192,7 +140,6 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         if (!user) {
           return reply.code(401).send({ ok: false, message: 'User not found' });
         }
-
         return {
           ok: true,
           user: { id: user.id, phone: user.phone },
@@ -210,9 +157,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: LogoutBody }>(
     '/logout',
     { schema: logoutSchema },
-    async (_req) => {
-      return { ok: true };
-    }
+    async (_req) => ({ ok: true })
   );
 };
 

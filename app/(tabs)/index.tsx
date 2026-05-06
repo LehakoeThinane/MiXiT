@@ -21,7 +21,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, API_BASE_URL } from '@/lib/api-client';
-import { getCurrentUser, requestOtp, verifyOtp } from '@/lib/auth-api';
+import { getCurrentUser, login, register } from '@/lib/auth-api';
 import { getMyProfile, requestPhotoUploadUrl, uploadPhotoToStorage, upsertMyProfile } from '@/lib/profile-api';
 import { useAuthStore } from '@/stores/auth-store';
 
@@ -152,9 +152,8 @@ export default function ProfileTabScreen() {
 
   const [step, setStep] = useState<Step>(1);
   const [phone, setPhone] = useState('');
-  const [otpCode, setOtpCode] = useState('');
-  const [otpVerified, setOtpVerified] = useState(false);
-  const [lastDebugCode, setLastDebugCode] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
 
   const [displayName, setDisplayName] = useState('');
   const [age, setAge] = useState(24);
@@ -292,25 +291,9 @@ export default function ProfileTabScreen() {
     setShowLastSeen(profile.showLastSeen ?? true);
   }, [profileQuery.data]);
 
-  const requestOtpMutation = useMutation({
-    mutationFn: (inputPhone: string) => requestOtp(inputPhone),
-    onSuccess: (payload) => {
-      setStepError(null);
-      setStep(2);
-      setOtpCode('');
-      setOtpVerified(false);
-      setLastDebugCode(payload.debugCode ?? null);
-    },
-    onError: (error) => {
-      const message = resolveErrorMessage(error);
-      setStepError(message);
-      Alert.alert('Request OTP failed', message);
-    },
-  });
-
-  const verifyOtpMutation = useMutation({
-    mutationFn: ({ inputPhone, code }: { inputPhone: string; code: string }) =>
-      verifyOtp(inputPhone, code),
+  const authMutation = useMutation({
+    mutationFn: ({ inputPhone, inputPassword, mode }: { inputPhone: string; inputPassword: string; mode: 'login' | 'register' }) =>
+      mode === 'register' ? register(inputPhone, inputPassword) : login(inputPhone, inputPassword),
     onSuccess: async (payload) => {
       setStepError(null);
       setSession({
@@ -318,22 +301,15 @@ export default function ProfileTabScreen() {
         accessToken: payload.tokens.accessToken,
         refreshToken: payload.tokens.refreshToken,
       });
-      setOtpVerified(true);
-      setTimeout(() => setStep(3), 280);
+      setStep(3);
       await queryClient.invalidateQueries({ queryKey: ['profile', payload.user.id] });
     },
     onError: (error) => {
-      setOtpVerified(false);
       const message = resolveErrorMessage(error);
       setStepError(message);
-      Alert.alert('Verify OTP failed', message);
+      Alert.alert('Sign in failed', message);
     },
   });
-
-  useEffect(() => {
-    if (step !== 2 || otpCode.length !== 6 || verifyOtpMutation.isPending) return;
-    verifyOtpMutation.mutate({ inputPhone: phone, code: otpCode });
-  }, [otpCode, phone, step, verifyOtpMutation]);
 
   const saveProfileMutation = useMutation({
     mutationFn: async () =>
@@ -446,37 +422,11 @@ export default function ProfileTabScreen() {
     setSelectedPhotos((prev) => prev.filter((_, position) => position !== index));
   };
 
-  const runResendAutofill = async () => {
-    if (requestOtpMutation.isPending) return;
-    try {
-      const payload = await requestOtpMutation.mutateAsync(phone);
-      const target = payload.debugCode ?? lastDebugCode ?? String(Math.floor(100000 + Math.random() * 900000));
-      setOtpCode('');
-      setOtpVerified(false);
-      setStepError(null);
-
-      for (let i = 1; i <= 6; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 120));
-        setOtpCode(target.slice(0, i));
-      }
-    } catch {
-      // handled by mutation onError
-    }
-  };
-
-  const applyDebugCode = () => {
-    if (!lastDebugCode) return;
-    setOtpCode(lastDebugCode);
-    setOtpVerified(false);
-    setStepError(null);
-  };
-
   const handleLogout = () => {
     clearSession();
     setStep(1);
     setPhone('');
-    setOtpCode('');
-    setOtpVerified(false);
+    setPassword('');
     setBioInput('');
     setSelectedIntents([]);
     setTraitsText('');
@@ -528,9 +478,7 @@ export default function ProfileTabScreen() {
   const stepTitle = useMemo(() => {
     switch (step) {
       case 1:
-        return 'Phone number';
-      case 2:
-        return 'OTP';
+        return authMode === 'register' ? 'Create account' : 'Sign in';
       case 3:
         return 'Your name';
       case 4:
@@ -964,6 +912,18 @@ export default function ProfileTabScreen() {
           <Animated.View style={{ transform: [{ translateX: slide }] }}>
             {step === 1 && (
               <View style={styles.stepBlock}>
+                <View style={styles.authModeRow}>
+                  <Pressable
+                    style={[styles.authModeTab, authMode === 'login' && styles.authModeTabActive]}
+                    onPress={() => { setAuthMode('login'); setStepError(null); }}>
+                    <Text style={[styles.authModeText, authMode === 'login' && styles.authModeTextActive]}>Sign in</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.authModeTab, authMode === 'register' && styles.authModeTabActive]}
+                    onPress={() => { setAuthMode('register'); setStepError(null); }}>
+                    <Text style={[styles.authModeText, authMode === 'register' && styles.authModeTextActive]}>Create account</Text>
+                  </Pressable>
+                </View>
                 <Text style={styles.label}>Phone Number</Text>
                 <TextInput
                   autoFocus
@@ -974,41 +934,25 @@ export default function ProfileTabScreen() {
                   style={styles.input}
                   keyboardType="phone-pad"
                 />
+                <Text style={styles.label}>Password</Text>
+                <TextInput
+                  value={password}
+                  onChangeText={setPassword}
+                  placeholder="Min 6 characters"
+                  placeholderTextColor="#8d90a6"
+                  style={styles.input}
+                  secureTextEntry
+                />
                 <Pressable
-                  style={[styles.button, requestOtpMutation.isPending && styles.buttonDisabled]}
-                  disabled={requestOtpMutation.isPending || phone.trim().length < 8}
-                  onPress={() => requestOtpMutation.mutate(phone)}>
+                  style={[styles.button, authMutation.isPending && styles.buttonDisabled]}
+                  disabled={authMutation.isPending || phone.trim().length < 8 || password.length < 6}
+                  onPress={() => authMutation.mutate({ inputPhone: phone, inputPassword: password, mode: authMode })}>
                   <Text style={styles.buttonText}>
-                    {requestOtpMutation.isPending ? 'Sending...' : 'Send code'}
+                    {authMutation.isPending
+                      ? authMode === 'register' ? 'Creating...' : 'Signing in...'
+                      : authMode === 'register' ? 'Create account' : 'Sign in'}
                   </Text>
                 </Pressable>
-              </View>
-            )}
-
-            {step === 2 && (
-              <View style={styles.stepBlock}>
-                <Text style={styles.label}>OTP Code</Text>
-                <OtpBoxes code={otpCode} verified={otpVerified} />
-                <TextInput
-                  value={otpCode}
-                  onChangeText={(v) => setOtpCode(v.replace(/\D/g, '').slice(0, 6))}
-                  keyboardType="number-pad"
-                  style={styles.hiddenOtpInput}
-                  autoFocus
-                  maxLength={6}
-                />
-                <Pressable onPress={runResendAutofill} disabled={requestOtpMutation.isPending}>
-                  <Text style={styles.link}>Resend code</Text>
-                </Pressable>
-                {lastDebugCode ? (
-                  <View style={styles.devOtpCard}>
-                    <Text style={styles.devOtpLabel}>Test mode OTP</Text>
-                    <Text style={styles.devOtpCode}>{lastDebugCode}</Text>
-                    <Pressable onPress={applyDebugCode}>
-                      <Text style={styles.devOtpAction}>Use this code</Text>
-                    </Pressable>
-                  </View>
-                ) : null}
               </View>
             )}
 
@@ -1585,6 +1529,30 @@ const styles = StyleSheet.create({
     color: '#151722',
     fontWeight: '700',
     fontSize: 18,
+  },
+  authModeRow: {
+    flexDirection: 'row' as const,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 18,
+  },
+  authModeTab: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center' as const,
+  },
+  authModeTabActive: {
+    backgroundColor: '#ff6b35',
+  },
+  authModeText: {
+    color: '#9ca3c4',
+    fontWeight: '600' as const,
+    fontSize: 14,
+  },
+  authModeTextActive: {
+    color: '#fff',
   },
   link: {
     color: '#d5dbff',

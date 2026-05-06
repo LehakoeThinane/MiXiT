@@ -46,18 +46,8 @@ async function start() {
       corsOrigin: env.corsOrigin,
       databaseUrl: maskUrl(env.databaseUrl),
       redisUrl: maskUrl(env.redisUrl),
-      supabaseUrl: maskUrl(env.supabaseUrl),
-      supabaseAnonKey: env.supabaseAnonKey ? maskSecret(env.supabaseAnonKey) : '(missing)',
-      smsProvider: env.smsProvider,
-      atUsername: env.atUsername ? maskSecret(env.atUsername) : '(missing)',
-      atApiKey: env.atApiKey ? maskSecret(env.atApiKey) : '(missing)',
-      atSenderId: env.atSenderId || '(missing)',
-      smsportalBaseUrl: maskUrl(env.smsportalBaseUrl),
-      smsportalAuthMode: env.smsportalAuthMode,
-      smsportalClientId: env.smsportalClientId ? maskSecret(env.smsportalClientId) : '(missing)',
-      smsportalApiSecret: env.smsportalApiSecret ? maskSecret(env.smsportalApiSecret) : '(missing)',
-      smsportalBearerToken: env.smsportalBearerToken ? maskSecret(env.smsportalBearerToken) : '(missing)',
-      smsportalOriginator: env.smsportalOriginator || '(missing)',
+      supabaseUrl: env.supabaseUrl ? maskUrl(env.supabaseUrl) : '(not set)',
+      supabaseAnonKey: env.supabaseAnonKey ? maskSecret(env.supabaseAnonKey) : '(not set)',
     });
 
     await app.listen({ host: env.host, port: env.port });
