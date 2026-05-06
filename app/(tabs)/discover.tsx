@@ -157,6 +157,7 @@ export default function DiscoverScreen() {
         <FlashList
           data={profiles}
           keyExtractor={(item) => item.id}
+          estimatedItemSize={440}
           contentContainerStyle={styles.listContent}
           renderItem={({ item }) => (
             <ProfileCard

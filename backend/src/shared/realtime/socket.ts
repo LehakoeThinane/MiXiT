@@ -79,6 +79,10 @@ export async function initSocketServer(app: FastifyInstance) {
 
     socket.on('message:send', async (payload: { recipientId: string; content?: string; type?: string; mediaUrl?: string }) => {
       if (!payload?.recipientId) return;
+      if (!payload.content && !payload.mediaUrl) return;
+
+      const recipientExists = await prisma.user.findUnique({ where: { id: payload.recipientId }, select: { id: true } });
+      if (!recipientExists) return;
 
       const type = payload.type ?? 'text';
       const message = await prisma.message.create({

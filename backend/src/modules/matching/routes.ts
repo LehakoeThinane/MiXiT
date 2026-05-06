@@ -245,7 +245,20 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
   // ---- Send a vibe ----
   fastify.post<{
     Body: { toUserId: string };
-  }>('/vibe', { preHandler: [fastify.authenticate], config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req, reply) => {
+  }>(
+    '/vibe',
+    {
+      preHandler: [fastify.authenticate],
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+      schema: {
+        body: {
+          type: 'object',
+          required: ['toUserId'],
+          properties: { toUserId: { type: 'string', minLength: 1, maxLength: 36 } },
+        },
+      },
+    },
+    async (req, reply) => {
     const fromUserId = req.user.sub;
     const { toUserId } = req.body;
 

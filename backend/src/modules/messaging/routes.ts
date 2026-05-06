@@ -111,7 +111,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{
     Body: SendMessageBody;
-  }>('/messages', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  }>('/messages', { preHandler: [fastify.authenticate], config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req, reply) => {
     const senderId = req.user.sub;
     const { recipientId, content, type = 'text', mediaUrl } = req.body;
 

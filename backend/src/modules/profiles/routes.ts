@@ -7,7 +7,7 @@ import { createSignedUploadUrl } from '../../shared/storage/supabase-storage.js'
 type UpsertProfileBody = {
   displayName: string;
   age: number;
-  gender: 'male' | 'female' | 'homesexual';
+  gender: 'male' | 'female' | 'other';
   bio?: string;
   city?: string;
   locationLat?: number;
@@ -29,7 +29,7 @@ const profileSchema = {
     properties: {
       displayName: { type: 'string', minLength: 2, maxLength: 30 },
       age: { type: 'integer', minimum: 18, maximum: 99 },
-      gender: { type: 'string', enum: ['male', 'female', 'homesexual'] },
+      gender: { type: 'string', enum: ['male', 'female', 'other'] },
       bio: { type: 'string', maxLength: 300 },
       city: { type: 'string', maxLength: 120 },
       locationLat: { type: 'number', minimum: -90, maximum: 90 },

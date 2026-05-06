@@ -5,7 +5,7 @@ export type Profile = {
   userId: string;
   displayName: string;
   age: number;
-  gender: 'male' | 'female' | 'homesexual';
+  gender: 'male' | 'female' | 'other';
   bio?: string | null;
   city?: string | null;
   locationLat?: number | null;
@@ -83,7 +83,7 @@ export async function uploadPhotoToStorage(signedUrl: string, fileUri: string, m
 export async function upsertMyProfile(input: {
   displayName: string;
   age: number;
-  gender: 'male' | 'female' | 'homesexual';
+  gender: 'male' | 'female' | 'other';
   bio?: string;
   city?: string;
   locationLat?: number;

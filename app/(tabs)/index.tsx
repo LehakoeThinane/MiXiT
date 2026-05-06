@@ -25,7 +25,7 @@ import { getCurrentUser, login, register } from '@/lib/auth-api';
 import { getMyProfile, requestPhotoUploadUrl, uploadPhotoToStorage, upsertMyProfile } from '@/lib/profile-api';
 import { useAuthStore } from '@/stores/auth-store';
 
-type Gender = 'male' | 'female' | 'homesexual';
+type Gender = 'male' | 'female' | 'other';
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 const NAME_SUGGESTIONS = ['Lerato', 'Thandi', 'Lehakoe', 'Anele', 'Kagiso'];
@@ -114,21 +114,6 @@ function Progress({ step }: { step: Step }) {
           return <View key={i} style={[styles.dot, active && styles.dotActive]} />;
         })}
       </View>
-    </View>
-  );
-}
-
-function OtpBoxes({ code, verified }: { code: string; verified: boolean }) {
-  return (
-    <View style={styles.otpRow}>
-      {Array.from({ length: 6 }).map((_, i) => {
-        const char = code[i] ?? '';
-        return (
-          <View key={i} style={[styles.otpBox, verified && styles.otpBoxVerified]}>
-            <Text style={styles.otpChar}>{char}</Text>
-          </View>
-        );
-      })}
     </View>
   );
 }
@@ -427,12 +412,18 @@ export default function ProfileTabScreen() {
     setStep(1);
     setPhone('');
     setPassword('');
+    setDisplayName('');
+    setAge(24);
+    setGender('female');
     setBioInput('');
+    setSelectedVibes([]);
     setSelectedIntents([]);
     setTraitsText('');
     setSelectedPhotos([]);
     setShowPhone(true);
     setShowLastSeen(true);
+    setIsRecording(false);
+    setRecordSeconds(0);
     setStepError(null);
     setShowCompletionStep(false);
     setIsEditingProfile(false);
@@ -643,7 +634,7 @@ export default function ProfileTabScreen() {
 
                 <Text style={styles.label}>Gender</Text>
                 <View style={styles.genderRow}>
-                  {(['male', 'female', 'homesexual'] as Gender[]).map((option) => {
+                  {(['male', 'female', 'other'] as Gender[]).map((option) => {
                     const active = gender === option;
                     return (
                       <Pressable
@@ -987,7 +978,7 @@ export default function ProfileTabScreen() {
               <View style={styles.stepBlock}>
                 <Text style={styles.label}>Gender</Text>
                 <View style={styles.genderRow}>
-                  {(['male', 'female', 'homesexual'] as Gender[]).map((option) => {
+                  {(['male', 'female', 'other'] as Gender[]).map((option) => {
                     const active = gender === option;
                     return (
                       <Pressable
@@ -1554,42 +1545,6 @@ const styles = StyleSheet.create({
   authModeTextActive: {
     color: '#fff',
   },
-  link: {
-    color: '#d5dbff',
-    marginTop: 8,
-    textDecorationLine: 'underline',
-    fontSize: 16,
-  },
-  otpRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  otpBox: {
-    flex: 1,
-    height: 56,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.22)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-  },
-  otpBoxVerified: {
-    borderColor: '#22c67a',
-    backgroundColor: '#163126',
-  },
-  otpChar: {
-    color: '#f7f8ff',
-    fontSize: 24,
-    fontWeight: '700',
-  },
-  hiddenOtpInput: {
-    position: 'absolute',
-    opacity: 0,
-    width: 1,
-    height: 1,
-  },
   suggestionRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1748,34 +1703,5 @@ const styles = StyleSheet.create({
     color: '#d9dcf2',
     fontWeight: '700',
     fontSize: 17,
-  },
-  devOtpCard: {
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(157,192,255,0.5)',
-    backgroundColor: 'rgba(104,140,199,0.18)',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 4,
-  },
-  devOtpLabel: {
-    color: '#9dc0ff',
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  devOtpCode: {
-    color: '#f7f8ff',
-    fontSize: 24,
-    fontWeight: '700',
-    letterSpacing: 2,
-  },
-  devOtpAction: {
-    color: '#9ca8ff',
-    fontSize: 14,
-    fontWeight: '700',
-    textDecorationLine: 'underline',
   },
 });
