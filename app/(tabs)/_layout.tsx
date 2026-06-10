@@ -1,15 +1,47 @@
+import { useQuery } from '@tanstack/react-query';
 import { Tabs } from 'expo-router';
 import React, { useEffect } from 'react';
 import { Platform } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { getConversations } from '@/lib/messaging-api';
+import { getReceivedVibes } from '@/lib/matching-api';
 import { registerForPushNotifications } from '@/lib/notifications';
 import { connectSocket, disconnectSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
+import { useUnreadStore } from '@/stores/unread-store';
 
 export default function TabLayout() {
   const accessToken = useAuthStore((state) => state.accessToken);
+  const isAuthenticated = Boolean(accessToken);
+  const { lastVibesSeenCount, lastChatOpenedAt } = useUnreadStore();
+
+  const conversationsQuery = useQuery({
+    queryKey: ['conversations'],
+    queryFn: getConversations,
+    enabled: isAuthenticated,
+    staleTime: 20_000,
+    refetchInterval: 30_000,
+  });
+
+  const vibesQuery = useQuery({
+    queryKey: ['vibes'],
+    queryFn: getReceivedVibes,
+    enabled: isAuthenticated,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+
+  const unreadChats = (conversationsQuery.data ?? []).filter((c) => {
+    const lastOpened = lastChatOpenedAt[c.id] ?? 0;
+    return new Date(c.lastMessageAt).getTime() > lastOpened;
+  }).length;
+
+  const currentVibesCount = (vibesQuery.data ?? []).length;
+  const unreadVibes = lastVibesSeenCount === -1
+    ? currentVibesCount
+    : Math.max(0, currentVibesCount - lastVibesSeenCount);
 
   useEffect(() => {
     if (accessToken) {
@@ -57,6 +89,8 @@ export default function TabLayout() {
         options={{
           title: 'Chats',
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="bubble.left.and.bubble.right.fill" color={color} />,
+          tabBarBadge: unreadChats > 0 ? unreadChats : undefined,
+          tabBarBadgeStyle: { backgroundColor: '#ff6b35', color: '#fff', fontSize: 11 },
         }}
       />
       <Tabs.Screen
@@ -71,6 +105,8 @@ export default function TabLayout() {
         options={{
           title: 'Vibes',
           tabBarIcon: ({ color }) => <IconSymbol size={24} name="hand.thumbsup.fill" color={color} />,
+          tabBarBadge: unreadVibes > 0 ? unreadVibes : undefined,
+          tabBarBadgeStyle: { backgroundColor: '#ff6b35', color: '#fff', fontSize: 11 },
         }}
       />
       <Tabs.Screen

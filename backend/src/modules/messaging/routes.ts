@@ -95,6 +95,20 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       take: limit,
     });
 
+    // Mark unread incoming messages as read
+    const unreadIds = messages
+      .filter((m) => m.recipientId === currentUserId && !m.readAt)
+      .map((m) => m.id);
+
+    if (unreadIds.length > 0) {
+      await prisma.message.updateMany({
+        where: { id: { in: unreadIds } },
+        data: { readAt: new Date() },
+      });
+      const io = getSocketServer();
+      io?.to(`user:${peerUserId}`).emit('message:read', { byUserId: currentUserId, messageIds: unreadIds });
+    }
+
     return {
       ok: true,
       messages: messages.map((message) => ({
@@ -104,6 +118,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
         content: message.content,
         type: message.type,
         mediaUrl: message.mediaUrl,
+        readAt: message.readAt?.toISOString() ?? null,
         createdAt: message.createdAt.toISOString(),
       })),
     };
@@ -139,6 +154,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       content: message.content,
       type: message.type,
       mediaUrl: message.mediaUrl,
+      readAt: null as string | null,
       createdAt: message.createdAt.toISOString(),
     };
 

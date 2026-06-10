@@ -176,6 +176,39 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
       };
     }
   );
+  fastify.get<{ Params: { userId: string } }>(
+    '/:userId',
+    { preHandler: [fastify.authenticate] },
+    async (req, reply) => {
+      const { userId } = req.params;
+      const profile = await prisma.profile.findUnique({
+        where: { userId },
+        select: {
+          userId: true,
+          displayName: true,
+          age: true,
+          gender: true,
+          bio: true,
+          city: true,
+          interests: true,
+          intents: true,
+          traits: true,
+          photos: true,
+          voiceIntroUrl: true,
+          voiceIntroDurationSec: true,
+          lastActive: true,
+          completedAt: true,
+        },
+      });
+
+      if (!profile) {
+        return reply.code(404).send({ ok: false, message: 'Profile not found' });
+      }
+
+      return { ok: true, profile };
+    }
+  );
+
   fastify.put(
     '/me/push-token',
     {

@@ -16,6 +16,7 @@ export type ThreadMessage = {
   content: string | null;
   type: 'text' | 'voice' | 'image' | string;
   mediaUrl: string | null;
+  readAt: string | null;
   createdAt: string;
 };
 

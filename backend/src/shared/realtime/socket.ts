@@ -120,6 +120,14 @@ export async function initSocketServer(app: FastifyInstance) {
       sendPushNotification(recipientProfile?.pushToken, senderProfile?.displayName ?? 'Someone', preview, { type: 'message', senderId: userId }).catch(() => {});
     });
 
+    socket.on('typing:start', ({ recipientId }: { recipientId: string }) => {
+      if (recipientId) io?.to(`user:${recipientId}`).emit('typing:start', { senderId: userId });
+    });
+
+    socket.on('typing:stop', ({ recipientId }: { recipientId: string }) => {
+      if (recipientId) io?.to(`user:${recipientId}`).emit('typing:stop', { senderId: userId });
+    });
+
     socket.on('disconnect', async () => {
       try {
         await redis.del(`presence:${userId}`);

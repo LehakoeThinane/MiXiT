@@ -1,15 +1,18 @@
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
+import { useEffect } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
 import { getReceivedVibes } from '@/lib/matching-api';
 import { useAuthStore } from '@/stores/auth-store';
+import { useUnreadStore } from '@/stores/unread-store';
 
 export default function VibesScreen() {
   const router = useRouter();
   const isAuthenticated = useAuthStore((state) => Boolean(state.accessToken));
+  const markVibesSeen = useUnreadStore((state) => state.markVibesSeen);
 
   const vibesQuery = useQuery({
     queryKey: ['vibes'],
@@ -19,6 +22,10 @@ export default function VibesScreen() {
   });
 
   const vibes = vibesQuery.data ?? [];
+
+  useEffect(() => {
+    if (vibesQuery.data) markVibesSeen(vibesQuery.data.length);
+  }, [vibesQuery.data, markVibesSeen]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -51,7 +58,20 @@ export default function VibesScreen() {
       ) : (
         <View style={styles.list}>
           {vibes.map((profile) => (
-            <View key={profile.id} style={styles.card}>
+            <Pressable
+              key={profile.id}
+              style={styles.card}
+              onPress={() =>
+                router.push({
+                  pathname: '/chat/[id]',
+                  params: {
+                    id: profile.id,
+                    name: profile.name,
+                    initial: profile.initial,
+                    online: profile.online ? '1' : '0',
+                  },
+                })
+              }>
               <View style={styles.avatar}>
                 <Text style={styles.avatarText}>{profile.initial}</Text>
               </View>
@@ -61,22 +81,10 @@ export default function VibesScreen() {
                 </Text>
                 <Text style={styles.meta}>{profile.distance}</Text>
               </View>
-              <Pressable
-                style={styles.chatButton}
-                onPress={() =>
-                  router.push({
-                    pathname: '/chat/[id]',
-                    params: {
-                      id: profile.id,
-                      name: profile.name,
-                      initial: profile.initial,
-                      online: profile.online ? '1' : '0',
-                    },
-                  })
-                }>
+              <View style={styles.chatButton}>
                 <Text style={styles.chatButtonText}>Chat</Text>
-              </Pressable>
-            </View>
+              </View>
+            </Pressable>
           ))}
         </View>
       )}

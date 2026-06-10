@@ -1,13 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
 import { getThreadMessages, sendMessage, type ThreadMessage } from '@/lib/messaging-api';
 import { getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
+import { useUnreadStore } from '@/stores/unread-store';
 
 function formatTime(value: string) {
   const date = new Date(value);
@@ -21,7 +22,11 @@ export default function ChatScreen() {
   const params = useLocalSearchParams<{ id?: string; name?: string; initial?: string; online?: string }>();
   const peerUserId = params.id ?? '';
   const { user, accessToken } = useAuthStore();
+  const markChatOpened = useUnreadStore((state) => state.markChatOpened);
   const [draft, setDraft] = useState('');
+  const [peerTyping, setPeerTyping] = useState(false);
+  const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingDot = useRef(new Animated.Value(0)).current;
   const scrollRef = useRef<ScrollView>(null);
 
   const threadQuery = useQuery({
@@ -76,16 +81,69 @@ export default function ChatScreen() {
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });
     };
 
+    const onRead = ({ messageIds }: { byUserId: string; messageIds: string[] }) => {
+      const idSet = new Set(messageIds);
+      queryClient.setQueryData<ThreadMessage[]>(['thread', peerUserId], (current) =>
+        current?.map((m) => (idSet.has(m.id) ? { ...m, readAt: new Date().toISOString() } : m)) ?? []
+      );
+    };
+
     socket.on('message:received', onReceived);
     socket.on('message:sent', onReceived);
+    socket.on('message:read', onRead);
 
     return () => {
       socket.off('message:received', onReceived);
       socket.off('message:sent', onReceived);
+      socket.off('message:read', onRead);
     };
   }, [peerUserId, queryClient, user?.id]);
 
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !peerUserId) return;
+
+    const onTypingStart = ({ senderId }: { senderId: string }) => {
+      if (senderId !== peerUserId) return;
+      setPeerTyping(true);
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(typingDot, { toValue: 1, duration: 400, useNativeDriver: true }),
+          Animated.timing(typingDot, { toValue: 0, duration: 400, useNativeDriver: true }),
+        ])
+      ).start();
+    };
+    const onTypingStop = ({ senderId }: { senderId: string }) => {
+      if (senderId !== peerUserId) return;
+      setPeerTyping(false);
+      typingDot.stopAnimation();
+      typingDot.setValue(0);
+    };
+
+    socket.on('typing:start', onTypingStart);
+    socket.on('typing:stop', onTypingStop);
+    return () => {
+      socket.off('typing:start', onTypingStart);
+      socket.off('typing:stop', onTypingStop);
+    };
+  }, [peerUserId, typingDot]);
+
+  const handleDraftChange = (text: string) => {
+    setDraft(text);
+    const socket = getSocket();
+    if (!socket || !peerUserId) return;
+    socket.emit('typing:start', { recipientId: peerUserId });
+    if (typingTimeout.current) clearTimeout(typingTimeout.current);
+    typingTimeout.current = setTimeout(() => {
+      socket.emit('typing:stop', { recipientId: peerUserId });
+    }, 1500);
+  };
+
   const canSend = useMemo(() => draft.trim().length > 0 && !sendMutation.isPending, [draft, sendMutation.isPending]);
+
+  useEffect(() => {
+    if (peerUserId) markChatOpened(peerUserId);
+  }, [peerUserId, markChatOpened]);
 
   useEffect(() => {
     if (messages.length > 0) {
@@ -94,7 +152,11 @@ export default function ChatScreen() {
   }, [messages.length]);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}>
+      <SafeAreaView style={styles.container}>
       <LiquidBackdrop />
       <Stack.Screen options={{ headerShown: false }} />
 
@@ -102,13 +164,22 @@ export default function ChatScreen() {
         <Text style={styles.backButton} onPress={() => router.back()}>
           ←
         </Text>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{peerInitial}</Text>
-        </View>
-        <View style={styles.headerTextWrap}>
-          <Text style={styles.name}>{peerName}</Text>
-          <Text style={styles.online}>{peerOnline ? '• online' : '• offline'}</Text>
-        </View>
+        <Pressable
+          style={styles.headerProfile}
+          onPress={() =>
+            router.push({
+              pathname: '/profile/[id]',
+              params: { id: peerUserId, name: peerName, initial: peerInitial, online: params.online ?? '0' },
+            })
+          }>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{peerInitial}</Text>
+          </View>
+          <View style={styles.headerTextWrap}>
+            <Text style={styles.name}>{peerName}</Text>
+            <Text style={styles.online}>{peerOnline ? '• online' : '• offline'}</Text>
+          </View>
+        </Pressable>
       </View>
 
       <ScrollView ref={scrollRef} contentContainerStyle={styles.messages}>
@@ -138,11 +209,38 @@ export default function ChatScreen() {
                   <Text style={styles.messageText}>{message.content ?? ''}</Text>
                 </View>
               )}
-              <Text style={styles.timeText}>{formatTime(message.createdAt)}</Text>
+              <View style={styles.timeRow}>
+                <Text style={styles.timeText}>{formatTime(message.createdAt)}</Text>
+                {mine ? (
+                  <Text style={[styles.tick, message.readAt ? styles.tickRead : styles.tickSent]}>
+                    {message.readAt ? '✓✓' : '✓'}
+                  </Text>
+                ) : null}
+              </View>
             </View>
           );
         })}
       </ScrollView>
+
+      {peerTyping ? (
+        <View style={styles.typingRow}>
+          <View style={styles.typingBubble}>
+            {[0, 150, 300].map((delay) => (
+              <Animated.View
+                key={delay}
+                style={[
+                  styles.typingDot,
+                  {
+                    opacity: typingDot,
+                    transform: [{ translateY: Animated.multiply(typingDot, new Animated.Value(-3)) }],
+                  },
+                ]}
+              />
+            ))}
+          </View>
+          <Text style={styles.typingLabel}>{peerName} is typing</Text>
+        </View>
+      ) : null}
 
       <View style={styles.inputBar}>
         <View style={styles.smallAction}>
@@ -156,7 +254,7 @@ export default function ChatScreen() {
           placeholderTextColor="#7f87ad"
           style={styles.input}
           value={draft}
-          onChangeText={setDraft}
+          onChangeText={handleDraftChange}
           editable={!sendMutation.isPending}
         />
         <Pressable
@@ -167,10 +265,15 @@ export default function ChatScreen() {
         </Pressable>
       </View>
     </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+    backgroundColor: '#060710',
+  },
   container: {
     flex: 1,
     backgroundColor: '#060710',
@@ -183,6 +286,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.14)',
+  },
+  headerProfile: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   backButton: {
     color: '#e0e4f5',
@@ -197,7 +306,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#ff6b35',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
   },
   avatarText: {
     color: '#f6f8ff',
@@ -218,9 +326,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   messages: {
+    flexGrow: 1,
     paddingHorizontal: 14,
     paddingTop: 14,
-    paddingBottom: 90,
+    paddingBottom: 14,
     gap: 10,
   },
   emptyState: {
@@ -257,16 +366,14 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   mineBubble: {
-    backgroundColor: 'rgba(255,107,53,0.76)',
-    borderBottomRightRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.28)',
+    backgroundColor: '#ff6b35',
+    borderBottomRightRadius: 4,
   },
   theirBubble: {
-    backgroundColor: 'rgba(255,255,255,0.11)',
-    borderBottomLeftRadius: 6,
+    backgroundColor: '#1e2340',
+    borderBottomLeftRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
+    borderColor: 'rgba(255,255,255,0.12)',
   },
   messageText: {
     color: '#f4f6ff',
@@ -274,10 +381,25 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     fontWeight: '600',
   },
+  timeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
   timeText: {
     color: '#c7cce2',
     fontSize: 12,
-    marginTop: 4,
+  },
+  tick: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  tickSent: {
+    color: '#6b7299',
+  },
+  tickRead: {
+    color: '#ff6b35',
   },
   voiceBubble: {
     borderRadius: 14,
@@ -310,11 +432,36 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 12,
   },
+  typingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+    gap: 8,
+  },
+  typingBubble: {
+    flexDirection: 'row',
+    gap: 4,
+    backgroundColor: '#1e2340',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  typingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#9199bc',
+  },
+  typingLabel: {
+    color: '#9199bc',
+    fontSize: 13,
+    fontStyle: 'italic',
+  },
   inputBar: {
-    position: 'absolute',
-    bottom: 12,
-    left: 12,
-    right: 12,
+    marginHorizontal: 12,
+    marginBottom: 12,
+    marginTop: 6,
     height: 48,
     borderRadius: 24,
     backgroundColor: 'rgba(255,255,255,0.12)',

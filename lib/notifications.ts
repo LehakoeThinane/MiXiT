@@ -16,6 +16,7 @@ Notifications.setNotificationHandler({
 
 export async function registerForPushNotifications(): Promise<void> {
   if (!Device.isDevice) return;
+  if (Constants.appOwnership === 'expo') return; // Expo Go dropped remote push in SDK 53
 
   const { status: existing } = await Notifications.getPermissionsAsync();
   let finalStatus = existing;

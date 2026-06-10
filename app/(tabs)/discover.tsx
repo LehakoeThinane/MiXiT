@@ -2,9 +2,18 @@ import { FlashList } from '@shopify/flash-list';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Dimensions, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Confetti } from '@/components/confetti';
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
 import { type DiscoverCandidate, getDiscoverCandidates, sendVibe } from '@/lib/matching-api';
 import { useAuthStore } from '@/stores/auth-store';
@@ -87,6 +96,76 @@ function ProfileCard({
   );
 }
 
+const SCREEN_W = Dimensions.get('window').width;
+const SWIPE_THRESHOLD = SCREEN_W * 0.32;
+
+function SwipeableCard({
+  children,
+  onSwipeRight,
+  onSwipeLeft,
+  isTop,
+}: {
+  children: React.ReactNode;
+  onSwipeRight: () => void;
+  onSwipeLeft: () => void;
+  isTop: boolean;
+}) {
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+
+  const pan = Gesture.Pan()
+    .enabled(isTop)
+    .onUpdate((e) => {
+      translateX.value = e.translationX;
+      translateY.value = e.translationY * 0.2;
+    })
+    .onEnd((e) => {
+      if (e.translationX > SWIPE_THRESHOLD) {
+        translateX.value = withTiming(SCREEN_W * 1.5, { duration: 280 });
+        runOnJS(onSwipeRight)();
+      } else if (e.translationX < -SWIPE_THRESHOLD) {
+        translateX.value = withTiming(-SCREEN_W * 1.5, { duration: 280 });
+        runOnJS(onSwipeLeft)();
+      } else {
+        translateX.value = withSpring(0);
+        translateY.value = withSpring(0);
+      }
+    });
+
+  const animStyle = useAnimatedStyle(() => {
+    const rotate = (translateX.value / SCREEN_W) * 14;
+    return {
+      transform: [
+        { translateX: translateX.value },
+        { translateY: translateY.value },
+        { rotate: `${rotate}deg` },
+      ],
+    };
+  });
+
+  const vibeOverlay = useAnimatedStyle(() => ({
+    opacity: Math.max(0, translateX.value / SWIPE_THRESHOLD) * 0.85,
+  }));
+
+  const passOverlay = useAnimatedStyle(() => ({
+    opacity: Math.max(0, -translateX.value / SWIPE_THRESHOLD) * 0.85,
+  }));
+
+  return (
+    <GestureDetector gesture={pan}>
+      <Animated.View style={animStyle}>
+        {children}
+        <Animated.View style={[StyleSheet.absoluteFill, styles.vibeOverlay, vibeOverlay]} pointerEvents="none">
+          <Text style={styles.overlayLabel}>VIBE 👋</Text>
+        </Animated.View>
+        <Animated.View style={[StyleSheet.absoluteFill, styles.passOverlay, passOverlay]} pointerEvents="none">
+          <Text style={styles.overlayLabel}>PASS</Text>
+        </Animated.View>
+      </Animated.View>
+    </GestureDetector>
+  );
+}
+
 export default function DiscoverScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -159,33 +238,47 @@ export default function DiscoverScreen() {
           keyExtractor={(item) => item.id}
           estimatedItemSize={440}
           contentContainerStyle={styles.listContent}
-          renderItem={({ item }) => (
-            <ProfileCard
-              profile={item}
-              isPlaying={playingId === item.id}
-              onTogglePlay={() => setPlayingId((prev) => (prev === item.id ? null : item.id))}
-              onVibe={() => {
+          renderItem={({ item, index }) => (
+            <SwipeableCard
+              isTop={index === 0}
+              onSwipeRight={() => {
                 if (vibeMutation.isPending) return;
                 vibeMutation.mutate(item);
               }}
-              onChat={() =>
-                router.push({
-                  pathname: '/chat/[id]',
-                  params: {
-                    id: item.id,
-                    name: item.name,
-                    initial: item.initial,
-                    online: item.online ? '1' : '0',
-                  },
-                })
-              }
-            />
+              onSwipeLeft={() => {
+                queryClient.setQueryData<DiscoverCandidate[]>(
+                  ['discover-candidates'],
+                  (prev) => prev?.filter((p) => p.id !== item.id) ?? []
+                );
+              }}>
+              <ProfileCard
+                profile={item}
+                isPlaying={playingId === item.id}
+                onTogglePlay={() => setPlayingId((prev) => (prev === item.id ? null : item.id))}
+                onVibe={() => {
+                  if (vibeMutation.isPending) return;
+                  vibeMutation.mutate(item);
+                }}
+                onChat={() =>
+                  router.push({
+                    pathname: '/chat/[id]',
+                    params: {
+                      id: item.id,
+                      name: item.name,
+                      initial: item.initial,
+                      online: item.online ? '1' : '0',
+                    },
+                  })
+                }
+              />
+            </SwipeableCard>
           )}
         />
       )}
 
       <Modal visible={Boolean(matchProfile)} transparent animationType="fade">
         <View style={styles.modalOverlay}>
+          {Boolean(matchProfile) && <Confetti />}
           <View style={styles.matchCard}>
             <Text style={styles.matchTopText}>IT'S A MATCH</Text>
 
@@ -522,6 +615,29 @@ const styles = StyleSheet.create({
     color: '#c4cae6',
     fontWeight: '700',
     fontSize: 17,
+  },
+  vibeOverlay: {
+    borderRadius: 24,
+    backgroundColor: 'rgba(255,107,53,0.35)',
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start',
+    padding: 20,
+  },
+  passOverlay: {
+    borderRadius: 24,
+    backgroundColor: 'rgba(100,110,170,0.35)',
+    alignItems: 'flex-end',
+    justifyContent: 'flex-start',
+    padding: 20,
+  },
+  overlayLabel: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 22,
+    letterSpacing: 1.5,
+    textShadowColor: 'rgba(0,0,0,0.4)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   stateCard: {
     marginHorizontal: 16,

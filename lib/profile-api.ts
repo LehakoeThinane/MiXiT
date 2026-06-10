@@ -80,6 +80,32 @@ export async function uploadPhotoToStorage(signedUrl: string, fileUri: string, m
   }
 }
 
+export type PeerProfile = {
+  userId: string;
+  displayName: string;
+  age: number;
+  gender: 'male' | 'female' | 'other';
+  bio?: string | null;
+  city?: string | null;
+  interests?: string[] | null;
+  intents?: string[] | null;
+  traits?: string[] | null;
+  photos?: string[] | null;
+  voiceIntroUrl?: string | null;
+  voiceIntroDurationSec?: number | null;
+  lastActive?: string | null;
+};
+
+export async function getPeerProfile(userId: string): Promise<PeerProfile | null> {
+  try {
+    const response = await apiRequest<{ ok: boolean; profile: PeerProfile }>(`/profiles/${userId}`, { auth: true });
+    return response.profile;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
 export async function upsertMyProfile(input: {
   displayName: string;
   age: number;
