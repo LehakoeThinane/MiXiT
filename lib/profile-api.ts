@@ -63,9 +63,8 @@ export async function requestPhotoUploadUrl(filename: string, mimeType: string):
 }
 
 export async function uploadPhotoToStorage(signedUrl: string, fileUri: string, mimeType: string): Promise<void> {
+  // React Native's fetch returns status 0 for local file:// URIs — skip the ok check
   const fileResponse = await fetch(fileUri);
-  if (!fileResponse.ok) throw new Error('Could not read local file');
-
   const blob = await fileResponse.blob();
 
   const upload = await fetch(signedUrl, {

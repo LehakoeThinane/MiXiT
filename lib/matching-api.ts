@@ -9,6 +9,7 @@ export type DiscoverCandidate = {
   tags: string[];
   bio: string;
   initial: string;
+  voiceIntroUrl: string | null;
   voiceDuration: string;
   online: boolean;
 };

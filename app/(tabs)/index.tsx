@@ -148,6 +148,7 @@ export default function ProfileTabScreen() {
   const [selectedIntents, setSelectedIntents] = useState<string[]>([]);
   const [traitsText, setTraitsText] = useState('');
   const [selectedPhotos, setSelectedPhotos] = useState<string[]>([]);
+  const [cityInput, setCityInput] = useState('');
   const [showPhone, setShowPhone] = useState(true);
   const [showLastSeen, setShowLastSeen] = useState(true);
   const [uploadingPhotoIndex, setUploadingPhotoIndex] = useState<number | null>(null);
@@ -262,19 +263,21 @@ export default function ProfileTabScreen() {
 
   useEffect(() => {
     if (!profileQuery.data) return;
+    if (isEditingProfile) return;
 
     const profile = profileQuery.data;
     setDisplayName(profile.displayName ?? '');
     setAge(profile.age ?? 24);
     setGender((profile.gender as Gender) ?? 'female');
     setBioInput(profile.bio ?? '');
+    setCityInput(profile.city ?? '');
     setSelectedVibes(parseInterests(profile));
     setSelectedIntents(parseStringList(profile.intents).slice(0, 4));
     setTraitsText(parseStringList(profile.traits).join('\n'));
     setSelectedPhotos(parseStringList(profile.photos).slice(0, 3));
     setShowPhone(profile.showPhone ?? true);
     setShowLastSeen(profile.showLastSeen ?? true);
-  }, [profileQuery.data]);
+  }, [profileQuery.data, isEditingProfile]);
 
   const authMutation = useMutation({
     mutationFn: ({ inputPhone, inputPassword, mode }: { inputPhone: string; inputPassword: string; mode: 'login' | 'register' }) =>
@@ -297,12 +300,13 @@ export default function ProfileTabScreen() {
   });
 
   const saveProfileMutation = useMutation({
-    mutationFn: async () =>
+    mutationFn: async (fromEditProfile: boolean) =>
       upsertMyProfile({
         displayName: displayName.trim(),
         age,
         gender,
         bio: bioInput.trim(),
+        city: cityInput.trim() || undefined,
         interests: selectedVibes,
         intents: selectedIntents,
         traits: traitsText
@@ -314,12 +318,15 @@ export default function ProfileTabScreen() {
         showPhone,
         showLastSeen,
       }),
-    onSuccess: async () => {
+    onSuccess: async (_data, fromEditProfile) => {
       setStepError(null);
       await queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
-      setIsEditingProfile(false);
-      setShowCompletionStep(true);
-      setStep(7);
+      if (fromEditProfile) {
+        setIsEditingProfile(false);
+      } else {
+        setShowCompletionStep(true);
+        setStep(7);
+      }
     },
     onError: (error) => {
       const message = resolveErrorMessage(error);
@@ -332,6 +339,21 @@ export default function ProfileTabScreen() {
   const canProceedStep5 = selectedVibes.length >= 3;
   const canSaveProfile = displayName.trim().length >= 2 && selectedVibes.length >= 3;
   const hasExistingProfile = Boolean(profileQuery.data);
+
+  const profileCompleteness = useMemo(() => {
+    const p = profileQuery.data;
+    if (!p) return 0;
+    const checks = [
+      Boolean(p.displayName),
+      Boolean(p.bio?.trim()),
+      Boolean(p.city?.trim()),
+      (p.photos as string[] | null)?.length > 0,
+      (p.interests as string[] | null)?.length > 0,
+      (p.intents as string[] | null)?.length > 0,
+      Boolean(p.voiceIntroUrl),
+    ];
+    return Math.round((checks.filter(Boolean).length / checks.length) * 100);
+  }, [profileQuery.data]);
   const shouldShowProfileHome = isAuthenticated && hasExistingProfile && !showCompletionStep;
   const primaryPhoto = selectedPhotos[0] ?? null;
   const mediaItems = [0, 1, 2].map((index) => selectedPhotos[index] ?? null);
@@ -374,7 +396,7 @@ export default function ProfileTabScreen() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaType.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.8,
@@ -384,8 +406,11 @@ export default function ProfileTabScreen() {
     if (result.canceled || !result.assets.length) return;
 
     const asset = result.assets[0];
-    const mimeType = asset.mimeType ?? 'image/jpeg';
-    const filename = asset.fileName ?? `photo-${Date.now()}.jpg`;
+    // Normalise Android aliases before sending to the backend
+    const rawMime = asset.mimeType ?? 'image/jpeg';
+    const mimeType = rawMime === 'image/jpg' ? 'image/jpeg' : rawMime;
+    const ext = mimeType.split('/')[1] ?? 'jpg';
+    const filename = asset.fileName ?? `photo-${Date.now()}.${ext}`;
 
     setUploadingPhotoIndex(index);
     try {
@@ -566,7 +591,7 @@ export default function ProfileTabScreen() {
         {liquidBackdrop}
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 78 : 0}>
           <ScrollView
             contentContainerStyle={styles.profileContent}
@@ -608,6 +633,25 @@ export default function ProfileTabScreen() {
                 </View>
               </View>
             </View>
+
+            {profileCompleteness < 100 ? (
+              <View style={styles.completenessCard}>
+                <View style={styles.completenessHeader}>
+                  <Text style={styles.completenessTitle}>Profile {profileCompleteness}% complete</Text>
+                  <Text style={styles.completenessHint}>Complete profiles get 3× more vibes</Text>
+                </View>
+                <View style={styles.completenessBarBg}>
+                  <View style={[styles.completenessBarFill, { width: `${profileCompleteness}%` as `${number}%` }]} />
+                </View>
+                <Text style={styles.completenessAction}>
+                  {profileCompleteness < 40
+                    ? 'Add a bio and city to get started'
+                    : profileCompleteness < 70
+                    ? 'Add photos and interests to stand out'
+                    : 'Add a voice intro to unlock your full profile'}
+                </Text>
+              </View>
+            ) : null}
 
             {isEditingProfile ? (
               <View style={styles.stepBlock}>
@@ -655,6 +699,15 @@ export default function ProfileTabScreen() {
                   placeholderTextColor="#8d90a6"
                   multiline
                   style={[styles.input, styles.bioInput]}
+                />
+
+                <Text style={styles.label}>City</Text>
+                <TextInput
+                  value={cityInput}
+                  onChangeText={setCityInput}
+                  placeholder="Your city"
+                  placeholderTextColor="#8d90a6"
+                  style={styles.input}
                 />
 
                 <Text style={styles.label}>Looking for</Text>
@@ -742,7 +795,7 @@ export default function ProfileTabScreen() {
                 <Pressable
                   style={[styles.button, (!canSaveProfile || saveProfileMutation.isPending) && styles.buttonDisabled]}
                   disabled={!canSaveProfile || saveProfileMutation.isPending}
-                  onPress={() => saveProfileMutation.mutate()}>
+                  onPress={() => saveProfileMutation.mutate(true)}>
                   <Text style={styles.buttonText}>
                     {saveProfileMutation.isPending ? 'Saving...' : 'Save profile'}
                   </Text>
@@ -757,6 +810,7 @@ export default function ProfileTabScreen() {
                       setAge(currentProfile.age ?? 24);
                       setGender((currentProfile.gender as Gender) ?? 'female');
                       setBioInput(currentProfile.bio ?? '');
+                      setCityInput(currentProfile.city ?? '');
                       setSelectedVibes(parseInterests(currentProfile));
                       setSelectedIntents(parseStringList(currentProfile.intents).slice(0, 4));
                       setTraitsText(parseStringList(currentProfile.traits).join('\n'));
@@ -1002,6 +1056,35 @@ export default function ProfileTabScreen() {
                   thumbTintColor="#ff6b35"
                   onValueChange={(value) => setAge(value)}
                 />
+
+                <Text style={styles.label}>Photos (optional — add up to 3)</Text>
+                <View style={styles.mediaRow}>
+                  {[0, 1, 2].map((index) => {
+                    const uri = selectedPhotos[index] ?? null;
+                    return (
+                      <View key={`setup-photo-${index}`} style={styles.mediaEditorCell}>
+                        <Pressable
+                          style={styles.mediaTile}
+                          onPress={() => pickPhotoAt(index)}
+                          disabled={uploadingPhotoIndex !== null}>
+                          {uploadingPhotoIndex === index ? (
+                            <ActivityIndicator color="#ff6b35" />
+                          ) : uri ? (
+                            <Image source={{ uri }} style={styles.mediaImage} contentFit="cover" />
+                          ) : (
+                            <Text style={styles.mediaPlaceholder}>+</Text>
+                          )}
+                        </Pressable>
+                        {uri && uploadingPhotoIndex !== index ? (
+                          <Pressable style={styles.mediaAction} onPress={() => removePhotoAt(index)}>
+                            <Text style={styles.mediaActionText}>Remove</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                </View>
+
                 <Pressable style={styles.button} onPress={() => setStep(5)}>
                   <Text style={styles.buttonText}>Next</Text>
                 </Pressable>
@@ -1056,7 +1139,7 @@ export default function ProfileTabScreen() {
                 <Pressable
                   style={[styles.button, (!hasVoiceClip || saveProfileMutation.isPending) && styles.buttonDisabled]}
                   disabled={!hasVoiceClip || saveProfileMutation.isPending}
-                  onPress={() => saveProfileMutation.mutate()}>
+                  onPress={() => saveProfileMutation.mutate(false)}>
                   <Text style={styles.buttonText}>
                     {saveProfileMutation.isPending ? 'Finishing...' : 'Finish setup'}
                   </Text>
@@ -1454,6 +1537,42 @@ const styles = StyleSheet.create({
   mediaPlaceholder: {
     color: '#c8cfe9',
     fontWeight: '700',
+    fontSize: 13,
+  },
+  completenessCard: {
+    backgroundColor: 'rgba(255,107,53,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,107,53,0.3)',
+    borderRadius: 16,
+    padding: 14,
+    gap: 8,
+    marginBottom: 4,
+  },
+  completenessHeader: {
+    gap: 2,
+  },
+  completenessTitle: {
+    color: '#f4f6ff',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  completenessHint: {
+    color: '#ff9f72',
+    fontSize: 13,
+  },
+  completenessBarBg: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+  },
+  completenessBarFill: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#ff6b35',
+  },
+  completenessAction: {
+    color: '#c8cfe9',
     fontSize: 13,
   },
   mediaAction: {

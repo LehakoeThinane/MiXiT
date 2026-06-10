@@ -155,10 +155,16 @@ function mapProfileToDiscoverCard(
     bio: string | null;
     interests: unknown;
     lastActive: Date | null;
+    voiceIntroUrl?: string | null;
+    voiceIntroDurationSec?: number | null;
   },
   distance: string
 ) {
   const tags = deriveTagsFromProfile(profile.interests, profile.bio);
+  const durationSec = profile.voiceIntroDurationSec ?? 0;
+  const voiceDuration = durationSec > 0
+    ? `0:${String(durationSec).padStart(2, '0')}`
+    : '0:00';
 
   return {
     id: profile.userId,
@@ -169,7 +175,8 @@ function mapProfileToDiscoverCard(
     tags,
     bio: profile.bio ?? 'MiXiT member',
     initial: profile.displayName.slice(0, 1).toUpperCase(),
-    voiceDuration: '0:20',
+    voiceIntroUrl: profile.voiceIntroUrl ?? null,
+    voiceDuration,
     online:
       profile.lastActive !== null
         ? Date.now() - profile.lastActive.getTime() <= 5 * 60 * 1000
@@ -411,6 +418,8 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
               bio: theirProfile.bio,
               interests: theirProfile.interests,
               lastActive: theirProfile.lastActive,
+              voiceIntroUrl: theirProfile.voiceIntroUrl,
+              voiceIntroDurationSec: theirProfile.voiceIntroDurationSec,
             },
             distance
           );

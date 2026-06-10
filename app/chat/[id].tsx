@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Audio } from 'expo-av';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
-import { getThreadMessages, sendMessage, type ThreadMessage } from '@/lib/messaging-api';
+import { getThreadMessages, requestMediaUploadUrl, sendMessage, type ThreadMessage, uploadMediaToStorage } from '@/lib/messaging-api';
 import { getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
 import { useUnreadStore } from '@/stores/unread-store';
@@ -25,6 +28,13 @@ export default function ChatScreen() {
   const markChatOpened = useUnreadStore((state) => state.markChatOpened);
   const [draft, setDraft] = useState('');
   const [peerTyping, setPeerTyping] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSecs, setRecordingSecs] = useState(0);
+  const [isSendingVoice, setIsSendingVoice] = useState(false);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const recordingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
   const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingDot = useRef(new Animated.Value(0)).current;
   const scrollRef = useRef<ScrollView>(null);
@@ -128,6 +138,127 @@ export default function ChatScreen() {
     };
   }, [peerUserId, typingDot]);
 
+  const startRecording = async () => {
+    try {
+      const { granted } = await Audio.requestPermissionsAsync();
+      if (!granted) return;
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      recordingRef.current = recording;
+      setIsRecording(true);
+      setRecordingSecs(0);
+      recordingTimer.current = setInterval(() => setRecordingSecs((s) => s + 1), 1000);
+    } catch {
+      // permission denied or device error — silently ignore
+    }
+  };
+
+  const cancelRecording = async () => {
+    if (recordingTimer.current) clearInterval(recordingTimer.current);
+    try {
+      await recordingRef.current?.stopAndUnloadAsync();
+    } catch {}
+    recordingRef.current = null;
+    setIsRecording(false);
+    setRecordingSecs(0);
+  };
+
+  const stopAndSendRecording = async () => {
+    if (!recordingRef.current) return;
+    if (recordingTimer.current) clearInterval(recordingTimer.current);
+    setIsRecording(false);
+    setIsSendingVoice(true);
+    const duration = recordingSecs;
+    try {
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
+      recordingRef.current = null;
+      if (!uri) throw new Error('No recording URI');
+
+      const filename = `voice-${Date.now()}.m4a`;
+      const { signedUrl, publicUrl } = await requestMediaUploadUrl(filename, 'audio/m4a');
+      await uploadMediaToStorage(signedUrl, uri, 'audio/m4a');
+
+      await sendMessage({
+        recipientId: peerUserId,
+        type: 'voice',
+        content: String(duration),
+        mediaUrl: publicUrl,
+      });
+      await queryClient.invalidateQueries({ queryKey: ['thread', peerUserId] });
+    } catch {
+      // upload or send failed — silently reset
+    } finally {
+      setIsSendingVoice(false);
+      setRecordingSecs(0);
+    }
+  };
+
+  const togglePlayVoice = async (message: ThreadMessage) => {
+    if (playingId === message.id) {
+      await soundRef.current?.pauseAsync();
+      setPlayingId(null);
+      return;
+    }
+    if (soundRef.current) {
+      await soundRef.current.unloadAsync();
+      soundRef.current = null;
+    }
+    if (!message.mediaUrl) return;
+    setPlayingId(message.id);
+    try {
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: message.mediaUrl },
+        { shouldPlay: true },
+        (status) => {
+          if (status.isLoaded && status.didJustFinish) {
+            setPlayingId(null);
+            sound.unloadAsync();
+          }
+        }
+      );
+      soundRef.current = sound;
+    } catch {
+      setPlayingId(null);
+    }
+  };
+
+  const sendImageMessage = async () => {
+    const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!granted) return;
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      quality: 0.8,
+    });
+    if (result.canceled || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+    const rawMime = asset.mimeType ?? 'image/jpeg';
+    const mimeType = rawMime === 'image/jpg' ? 'image/jpeg' : rawMime;
+    const ext = mimeType.split('/')[1] ?? 'jpg';
+    const filename = `image-${Date.now()}.${ext}`;
+
+    try {
+      const { signedUrl, publicUrl } = await requestMediaUploadUrl(filename, mimeType);
+      await uploadMediaToStorage(signedUrl, asset.uri, mimeType);
+      await sendMessage({ recipientId: peerUserId, type: 'image', mediaUrl: publicUrl });
+      await queryClient.invalidateQueries({ queryKey: ['thread', peerUserId] });
+    } catch (err) {
+      Alert.alert('Image failed', err instanceof Error ? err.message : 'Could not send image.');
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      soundRef.current?.unloadAsync();
+      recordingRef.current?.stopAndUnloadAsync();
+      if (recordingTimer.current) clearInterval(recordingTimer.current);
+    };
+  }, []);
+
   const handleDraftChange = (text: string) => {
     setDraft(text);
     const socket = getSocket();
@@ -199,11 +330,23 @@ export default function ChatScreen() {
           return (
             <View key={message.id} style={[styles.messageWrap, mine ? styles.mineWrap : styles.theirWrap]}>
               {message.type === 'voice' ? (
-                <View style={[styles.voiceBubble, mine ? styles.mineVoice : styles.theirVoice]}>
-                  <Text style={styles.voicePlay}>▶</Text>
+                <Pressable
+                  style={[styles.voiceBubble, mine ? styles.mineVoice : styles.theirVoice]}
+                  onPress={() => togglePlayVoice(message)}>
+                  <Text style={styles.voicePlay}>{playingId === message.id ? '⏸' : '▶'}</Text>
                   <View style={styles.voiceWave} />
-                  <Text style={styles.voiceDuration}>0:20</Text>
-                </View>
+                  <Text style={styles.voiceDuration}>
+                    {message.content && !Number.isNaN(Number(message.content))
+                      ? `0:${String(Number(message.content)).padStart(2, '0')}`
+                      : '0:00'}
+                  </Text>
+                </Pressable>
+              ) : message.type === 'image' && message.mediaUrl ? (
+                <Image
+                  source={{ uri: message.mediaUrl }}
+                  style={styles.imageBubble}
+                  contentFit="cover"
+                />
               ) : (
                 <View style={[styles.bubble, mine ? styles.mineBubble : styles.theirBubble]}>
                   <Text style={styles.messageText}>{message.content ?? ''}</Text>
@@ -242,28 +385,48 @@ export default function ChatScreen() {
         </View>
       ) : null}
 
-      <View style={styles.inputBar}>
-        <View style={styles.smallAction}>
-          <Text style={styles.smallActionText}>🎙</Text>
+      {isRecording || isSendingVoice ? (
+        <View style={styles.inputBar}>
+          <Pressable style={styles.smallAction} onPress={cancelRecording} disabled={isSendingVoice}>
+            <Text style={styles.smallActionText}>✕</Text>
+          </Pressable>
+          <View style={styles.recordingIndicator}>
+            <View style={styles.recordingDot} />
+            <Text style={styles.recordingTimer}>
+              {isSendingVoice ? 'Sending...' : `0:${String(recordingSecs).padStart(2, '0')}`}
+            </Text>
+          </View>
+          <Pressable
+            style={[styles.sendAction, isSendingVoice && styles.sendActionDisabled]}
+            disabled={isSendingVoice}
+            onPress={stopAndSendRecording}>
+            <Text style={styles.sendActionText}>➤</Text>
+          </Pressable>
         </View>
-        <View style={styles.smallAction}>
-          <Text style={styles.smallActionText}>📷</Text>
+      ) : (
+        <View style={styles.inputBar}>
+          <Pressable style={styles.smallAction} onPress={startRecording}>
+            <Text style={styles.smallActionText}>🎙</Text>
+          </Pressable>
+          <Pressable style={styles.smallAction} onPress={sendImageMessage}>
+            <Text style={styles.smallActionText}>📷</Text>
+          </Pressable>
+          <TextInput
+            placeholder="Message..."
+            placeholderTextColor="#7f87ad"
+            style={styles.input}
+            value={draft}
+            onChangeText={handleDraftChange}
+            editable={!sendMutation.isPending}
+          />
+          <Pressable
+            style={[styles.sendAction, !canSend && styles.sendActionDisabled]}
+            disabled={!canSend}
+            onPress={() => sendMutation.mutate(draft.trim())}>
+            <Text style={styles.sendActionText}>➤</Text>
+          </Pressable>
         </View>
-        <TextInput
-          placeholder="Message..."
-          placeholderTextColor="#7f87ad"
-          style={styles.input}
-          value={draft}
-          onChangeText={handleDraftChange}
-          editable={!sendMutation.isPending}
-        />
-        <Pressable
-          style={[styles.sendAction, !canSend && styles.sendActionDisabled]}
-          disabled={!canSend}
-          onPress={() => sendMutation.mutate(draft.trim())}>
-          <Text style={styles.sendActionText}>➤</Text>
-        </Pressable>
-      </View>
+      )}
     </SafeAreaView>
     </KeyboardAvoidingView>
   );
@@ -401,6 +564,12 @@ const styles = StyleSheet.create({
   tickRead: {
     color: '#ff6b35',
   },
+  imageBubble: {
+    width: 220,
+    height: 220,
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
   voiceBubble: {
     borderRadius: 14,
     borderWidth: 1,
@@ -501,6 +670,23 @@ const styles = StyleSheet.create({
   },
   sendActionDisabled: {
     opacity: 0.5,
+  },
+  recordingIndicator: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  recordingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#ff3b30',
+  },
+  recordingTimer: {
+    color: '#eef0fc',
+    fontSize: 15,
+    fontWeight: '600',
   },
   sendActionText: {
     color: '#131726',

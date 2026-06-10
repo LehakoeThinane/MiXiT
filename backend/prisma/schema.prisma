@@ -20,6 +20,7 @@ model User {
   sentVibes      Vibe[]           @relation("vibe_sender")
   receivedVibes  Vibe[]           @relation("vibe_recipient")
   roomMembership RoomMembership[]
+  roomMessages   RoomMessage[]
   purchases      UserPurchase[]
 
   @@map("users")
@@ -100,8 +101,23 @@ model Room {
   createdAt   DateTime         @default(now()) @map("created_at")
   updatedAt   DateTime         @updatedAt @map("updated_at")
   memberships RoomMembership[]
+  messages    RoomMessage[]
 
   @@map("rooms")
+}
+
+model RoomMessage {
+  id        String   @id @default(uuid())
+  roomId    String   @map("room_id")
+  userId    String   @map("user_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, createdAt(sort: Desc)])
+  @@map("room_messages")
 }
 
 model RoomMembership {

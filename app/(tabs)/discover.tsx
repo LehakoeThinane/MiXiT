@@ -1,7 +1,8 @@
 import { FlashList } from '@shopify/flash-list';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Audio } from 'expo-av';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Dimensions, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -171,7 +172,46 @@ export default function DiscoverScreen() {
   const queryClient = useQueryClient();
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [matchProfile, setMatchProfile] = useState<DiscoverCandidate | null>(null);
+  const [activeOnly, setActiveOnly] = useState(false);
   const isAuthenticated = useAuthStore((state) => Boolean(state.accessToken));
+  const soundRef = useRef<Audio.Sound | null>(null);
+
+  const toggleVoiceIntro = async (profile: DiscoverCandidate) => {
+    if (playingId === profile.id) {
+      await soundRef.current?.pauseAsync();
+      setPlayingId(null);
+      return;
+    }
+    if (soundRef.current) {
+      await soundRef.current.unloadAsync();
+      soundRef.current = null;
+    }
+    if (!profile.voiceIntroUrl) {
+      setPlayingId(null);
+      return;
+    }
+    setPlayingId(profile.id);
+    try {
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: profile.voiceIntroUrl },
+        { shouldPlay: true },
+        (status) => {
+          if (status.isLoaded && status.didJustFinish) {
+            setPlayingId(null);
+            sound.unloadAsync();
+          }
+        }
+      );
+      soundRef.current = sound;
+    } catch {
+      setPlayingId(null);
+    }
+  };
+
+  useEffect(() => {
+    return () => { soundRef.current?.unloadAsync(); };
+  }, []);
 
   const candidatesQuery = useQuery({
     queryKey: ['discover-candidates'],
@@ -180,7 +220,8 @@ export default function DiscoverScreen() {
     staleTime: 30_000,
   });
 
-  const profiles = candidatesQuery.data ?? [];
+  const allProfiles = candidatesQuery.data ?? [];
+  const profiles = activeOnly ? allProfiles.filter((p) => p.online) : allProfiles;
   const vibeMutation = useMutation({
     mutationFn: async (profile: DiscoverCandidate) => sendVibe(profile.id),
     onSuccess: async (result, profile) => {
@@ -204,8 +245,14 @@ export default function DiscoverScreen() {
       <View style={styles.headerRow}>
         <Text style={styles.screenTitle}>Discover</Text>
         <View style={styles.headerActions}>
-          <View style={styles.headerIcon} />
-          <View style={styles.headerIcon} />
+          <Pressable
+            style={[styles.filterChip, activeOnly && styles.filterChipActive]}
+            onPress={() => setActiveOnly((v) => !v)}>
+            <View style={[styles.filterDot, activeOnly && styles.filterDotActive]} />
+            <Text style={[styles.filterLabel, activeOnly && styles.filterLabelActive]}>
+              Active now
+            </Text>
+          </Pressable>
         </View>
       </View>
 
@@ -254,7 +301,7 @@ export default function DiscoverScreen() {
               <ProfileCard
                 profile={item}
                 isPlaying={playingId === item.id}
-                onTogglePlay={() => setPlayingId((prev) => (prev === item.id ? null : item.id))}
+                onTogglePlay={() => toggleVoiceIntro(item)}
                 onVibe={() => {
                   if (vibeMutation.isPending) return;
                   vibeMutation.mutate(item);
@@ -348,13 +395,37 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
-  headerIcon: {
-    width: 40,
-    height: 40,
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: 20,
     backgroundColor: 'rgba(255,255,255,0.1)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.2)',
+  },
+  filterChipActive: {
+    backgroundColor: 'rgba(101,239,193,0.15)',
+    borderColor: 'rgba(101,239,193,0.5)',
+  },
+  filterDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#5a6080',
+  },
+  filterDotActive: {
+    backgroundColor: '#65efc1',
+  },
+  filterLabel: {
+    color: '#c3c9e0',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  filterLabelActive: {
+    color: '#65efc1',
   },
   listContent: {
     paddingHorizontal: 16,

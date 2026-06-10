@@ -244,14 +244,18 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
           required: ['filename', 'mimeType'],
           properties: {
             filename: { type: 'string', minLength: 1, maxLength: 255 },
-            mimeType: { type: 'string', enum: ['image/jpeg', 'image/png', 'image/webp'] },
+            mimeType: { type: 'string', enum: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'] },
             size: { type: 'integer', minimum: 1, maximum: 5242880 },
           },
         },
       },
     },
     async (req, reply) => {
-      const { filename, mimeType } = req.body as { filename: string; mimeType: string; size?: number };
+      const raw = (req.body as { filename: string; mimeType: string; size?: number });
+      const filename = raw.filename;
+      // Normalise common browser/Android aliases to canonical MIME types
+      const mimeMap: Record<string, string> = { 'image/jpg': 'image/jpeg', 'image/jfif': 'image/jpeg' };
+      const mimeType = mimeMap[raw.mimeType] ?? raw.mimeType;
 
       try {
         const { signedUrl, publicUrl } = await createSignedUploadUrl(req.user.sub, filename);

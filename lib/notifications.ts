@@ -5,18 +5,18 @@ import { Platform } from 'react-native';
 
 import { apiRequest } from '@/lib/api-client';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  }),
-});
-
 export async function registerForPushNotifications(): Promise<void> {
   if (!Device.isDevice) return;
   if (Constants.appOwnership === 'expo') return; // Expo Go dropped remote push in SDK 53
+
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+    }),
+  });
 
   const { status: existing } = await Notifications.getPermissionsAsync();
   let finalStatus = existing;

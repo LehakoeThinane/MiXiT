@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
@@ -13,6 +14,7 @@ function formatMeta(memberCount: number, city: string) {
 }
 
 export default function RoomsScreen() {
+  const router = useRouter();
   const queryClient = useQueryClient();
   const isAuthenticated = useAuthStore((state) => Boolean(state.accessToken));
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
@@ -93,15 +95,26 @@ export default function RoomsScreen() {
           </Pressable>
         </View>
       ) : (
-        <View style={styles.list}>
+        <ScrollView style={styles.flex} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
           {rooms.map((room) => (
-            <View key={room.id} style={styles.roomCard}>
+            <Pressable
+              key={room.id}
+              style={({ pressed }) => [styles.roomCard, pressed && styles.roomCardPressed]}
+              onPress={() =>
+                router.push({
+                  pathname: '/room/[id]',
+                  params: { id: room.id, name: room.name, emoji: room.emoji },
+                })
+              }>
               <View style={styles.emojiBubble}>
                 <Text style={styles.emoji}>{room.emoji}</Text>
               </View>
               <View style={styles.roomTextWrap}>
                 <Text style={styles.roomTitle}>{room.name}</Text>
-                <Text style={styles.roomMeta}>• {formatMeta(room.memberCount, room.city)}</Text>
+                <Text style={styles.roomMeta}>{formatMeta(room.memberCount, room.city)}</Text>
+                {room.description ? (
+                  <Text style={styles.roomDesc} numberOfLines={1}>{room.description}</Text>
+                ) : null}
               </View>
               <Pressable
                 disabled={Boolean(pendingRoomId && pendingRoomId === room.id)}
@@ -111,14 +124,17 @@ export default function RoomsScreen() {
                   pendingRoomId === room.id && styles.roomActionDisabled,
                 ]}
                 hitSlop={8}
-                onPress={() => toggleMembershipMutation.mutate({ roomId: room.id, joined: room.joined })}>
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  toggleMembershipMutation.mutate({ roomId: room.id, joined: room.joined });
+                }}>
                 <Text style={[styles.roomActionText, room.joined && styles.roomActionTextJoined]}>
                   {room.joined ? 'Joined' : 'Join'}
                 </Text>
               </Pressable>
-            </View>
+            </Pressable>
           ))}
-        </View>
+        </ScrollView>
       )}
     </SafeAreaView>
   );
@@ -192,8 +208,12 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  flex: {
+    flex: 1,
+  },
   list: {
     gap: 10,
+    paddingBottom: 90,
   },
   roomCard: {
     backgroundColor: 'rgba(255,255,255,0.1)',
@@ -204,6 +224,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  roomCardPressed: {
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  roomDesc: {
+    color: '#8d90a6',
+    fontSize: 13,
+    marginTop: 2,
   },
   emojiBubble: {
     width: 44,

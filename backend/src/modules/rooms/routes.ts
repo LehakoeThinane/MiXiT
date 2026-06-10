@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { getSocketServer } from '../../shared/realtime/socket.js';
 
 const defaultRooms = [
   { slug: 'amapiano-lovers', name: 'Amapiano Lovers', emoji: '🎵', city: 'JHB', description: 'Music lovers and playlists' },
@@ -86,6 +87,78 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
     });
 
     return { ok: true };
+  });
+
+  fastify.get<{
+    Params: { roomId: string };
+    Querystring: { before?: string; limit?: string };
+  }>('/:roomId/messages', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const { roomId } = req.params;
+    const limit = Math.min(Number(req.query.limit ?? 50), 100);
+    const before = req.query.before ? new Date(req.query.before) : undefined;
+
+    const room = await prisma.room.findUnique({ where: { id: roomId }, select: { id: true } });
+    if (!room) return reply.code(404).send({ ok: false, message: 'Room not found' });
+
+    const messages = await prisma.roomMessage.findMany({
+      where: {
+        roomId,
+        ...(before ? { createdAt: { lt: before } } : {}),
+      },
+      include: {
+        user: {
+          select: {
+            profile: { select: { displayName: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+
+    return {
+      ok: true,
+      messages: messages.reverse().map((m) => ({
+        id: m.id,
+        roomId: m.roomId,
+        userId: m.userId,
+        senderName: m.user.profile?.displayName ?? 'MiXiT user',
+        content: m.content,
+        createdAt: m.createdAt.toISOString(),
+      })),
+    };
+  });
+
+  fastify.post<{
+    Params: { roomId: string };
+    Body: { content: string };
+  }>('/:roomId/messages', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const { roomId } = req.params;
+    const { content } = req.body ?? {};
+    if (!content?.trim()) return reply.code(400).send({ ok: false, message: 'content required' });
+
+    const room = await prisma.room.findUnique({ where: { id: roomId }, select: { id: true } });
+    if (!room) return reply.code(404).send({ ok: false, message: 'Room not found' });
+
+    const [message, senderProfile] = await Promise.all([
+      prisma.roomMessage.create({
+        data: { roomId, userId: req.user.sub, content: content.trim() },
+      }),
+      prisma.profile.findUnique({ where: { userId: req.user.sub }, select: { displayName: true } }),
+    ]);
+
+    const payload = {
+      id: message.id,
+      roomId: message.roomId,
+      userId: message.userId,
+      senderName: senderProfile?.displayName ?? 'MiXiT user',
+      content: message.content,
+      createdAt: message.createdAt.toISOString(),
+    };
+
+    getSocketServer()?.to(`room:${roomId}`).emit('room:message', payload);
+
+    return { ok: true, message: payload };
   });
 };
 

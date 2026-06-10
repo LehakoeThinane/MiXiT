@@ -72,6 +72,19 @@ export async function initSocketServer(app: FastifyInstance) {
     const userId = socket.data.userId as string;
     socket.join(`user:${userId}`);
 
+    // Auto-join all room channels the user is a member of
+    try {
+      const memberships = await prisma.roomMembership.findMany({
+        where: { userId },
+        select: { roomId: true },
+      });
+      for (const { roomId } of memberships) {
+        socket.join(`room:${roomId}`);
+      }
+    } catch {
+      // non-fatal — user can still chat in rooms they navigate to
+    }
+
     try {
       await ensureRedisConnection();
       await redis.setex(`presence:${userId}`, 300, 'online');
@@ -118,6 +131,10 @@ export async function initSocketServer(app: FastifyInstance) {
       ]);
       const preview = type === 'voice' ? 'Sent a voice note' : type === 'image' ? 'Sent a photo' : (payload.content ?? '').slice(0, 100);
       sendPushNotification(recipientProfile?.pushToken, senderProfile?.displayName ?? 'Someone', preview, { type: 'message', senderId: userId }).catch(() => {});
+    });
+
+    socket.on('room:join', ({ roomId }: { roomId: string }) => {
+      if (roomId) socket.join(`room:${roomId}`);
     });
 
     socket.on('typing:start', ({ recipientId }: { recipientId: string }) => {

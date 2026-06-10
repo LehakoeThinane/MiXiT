@@ -54,7 +54,12 @@ export function buildApp() {
     }
   });
 
-  app.get('/health', async () => {
+  app.get('/health', async (_req, reply) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+    } catch {
+      return reply.code(503).send({ ok: false, service: 'MiXiT API', db: 'unreachable' });
+    }
     return {
       ok: true,
       service: 'MiXiT API',

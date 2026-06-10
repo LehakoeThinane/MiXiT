@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { prisma } from '../../shared/db/prisma.js';
 import { sendPushNotification } from '../../shared/push/expo-push.js';
 import { getSocketServer } from '../../shared/realtime/socket.js';
+import { createSignedChatMediaUrl } from '../../shared/storage/supabase-storage.js';
 
 type SendMessageBody = {
   recipientId: string;
@@ -19,6 +20,33 @@ function formatPreview(type: string, content: string | null) {
 }
 
 const messagingRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.post(
+    '/media-upload',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        body: {
+          type: 'object',
+          required: ['filename', 'mimeType'],
+          properties: {
+            filename: { type: 'string', minLength: 1, maxLength: 255 },
+            mimeType: { type: 'string', minLength: 1, maxLength: 100 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { filename, mimeType } = req.body as { filename: string; mimeType: string };
+      try {
+        const { signedUrl, publicUrl } = await createSignedChatMediaUrl(req.user.sub, filename);
+        return { ok: true, signedUrl, publicUrl, mimeType };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to prepare media upload';
+        return reply.code(500).send({ ok: false, message });
+      }
+    }
+  );
+
   fastify.get('/conversations', { preHandler: [fastify.authenticate] }, async (req) => {
     const currentUserId = req.user.sub;
 
