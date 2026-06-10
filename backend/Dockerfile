@@ -13,6 +13,6 @@ COPY . .
 
 RUN pnpm run build
 
-EXPOSE 3000
+EXPOSE 8080
 
 CMD ["node", "dist/server.js"]
