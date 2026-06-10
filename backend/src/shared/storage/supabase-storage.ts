@@ -56,7 +56,7 @@ export async function createSignedUploadUrl(
   const objectPath = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
 
   const response = await fetch(
-    `${env.supabaseUrl}/storage/v1/object/sign/upload/${BUCKET}/${objectPath}`,
+    `${env.supabaseUrl}/storage/v1/object/upload/sign/${BUCKET}/${objectPath}`,
     {
       method: 'POST',
       headers: serviceHeaders(),
