@@ -35,6 +35,7 @@ yarn-error.*
 backend/.env
 backend/.env.*
 !backend/.env.example
+.env
 
 # generated prisma client (regenerated on build)
 backend/src/generated/
