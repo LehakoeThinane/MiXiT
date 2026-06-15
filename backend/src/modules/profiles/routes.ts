@@ -262,6 +262,7 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
         return { ok: true, signedUrl, publicUrl };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to prepare photo upload';
+        req.log.error({ err: error }, 'Photo upload route failed');
         return reply.code(500).send({ ok: false, message });
       }
     }
