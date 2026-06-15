@@ -121,7 +121,7 @@ export async function createSignedUploadUrl(
 
   if (!response.ok) {
     const text = await response.text();
-    logger.error({ status: response.status, body: text, bucket: BUCKET, objectPath }, 'Supabase Storage sign failed');
+    logger.error(`Supabase Storage sign failed [${response.status}] bucket=${BUCKET} path=${objectPath} body=${text}`);
     throw new Error(`Supabase Storage sign failed (${response.status}): ${text}`);
   }
 
