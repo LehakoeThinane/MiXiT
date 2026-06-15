@@ -85,7 +85,7 @@ export async function createSignedChatMediaUrl(
 
   const response = await fetch(
     `${env.supabaseUrl}/storage/v1/object/upload/sign/${CHAT_BUCKET}/${objectPath}`,
-    { method: 'POST', headers: serviceHeaders() }
+    { method: 'POST', headers: serviceHeaders(), body: JSON.stringify({}) }
   );
 
   if (!response.ok) {
@@ -116,6 +116,7 @@ export async function createSignedUploadUrl(
     {
       method: 'POST',
       headers: serviceHeaders(),
+      body: JSON.stringify({}),
     }
   );
 
