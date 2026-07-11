@@ -127,9 +127,7 @@ export async function createSignedUploadUrl(
   }
 
   const data = (await response.json()) as { url: string };
-  logger.info(`Supabase signed URL raw: ${JSON.stringify(data)}`);
   const signedUrl = `${env.supabaseUrl}${data.url}`;
-  logger.info(`Supabase signedUrl constructed: ${signedUrl}`);
   const publicUrl = `${env.supabaseUrl}/storage/v1/object/public/${BUCKET}/${objectPath}`;
 
   return { signedUrl, publicUrl };

@@ -16,7 +16,7 @@ export type Purchase = {
   productSlug: string;
   productName: string;
   productType: string;
-  status: 'active' | 'expired' | 'cancelled';
+  status: 'pending' | 'active' | 'failed' | 'expired' | 'cancelled';
   price: string;
   expiresAt: string | null;
   cancelledAt: string | null;
@@ -28,16 +28,9 @@ type ProductsResponse = {
   products: Product[];
 };
 
-type SubscribeResponse = {
+type CheckoutResponse = {
   ok: boolean;
-  purchase: {
-    id: string;
-    productSlug: string;
-    productName: string;
-    status: string;
-    expiresAt: string | null;
-    createdAt: string;
-  };
+  checkoutUrl: string;
 };
 
 type PurchasesResponse = {
@@ -51,13 +44,13 @@ export async function getProducts() {
   return response.products;
 }
 
-export async function subscribeTo(productSlug: string) {
-  const response = await apiRequest<SubscribeResponse>('/payments/subscribe', {
+export async function startCheckout(productSlug: string) {
+  const response = await apiRequest<CheckoutResponse>('/payments/subscribe', {
     method: 'POST',
     auth: true,
     body: { productSlug },
   });
-  return response.purchase;
+  return response.checkoutUrl;
 }
 
 export async function getMyPurchases() {

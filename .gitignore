@@ -43,6 +43,9 @@ backend/src/generated/
 # typescript
 *.tsbuildinfo
 
+# local Claude Code tool state
+.claude/
+
 app-example
 
 # generated native folders

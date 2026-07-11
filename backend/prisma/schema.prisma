@@ -10,7 +10,6 @@ datasource db {
 
 model User {
   id             String           @id @default(uuid())
-  supabaseUserId String?          @unique @map("supabase_user_id")
   phone          String           @unique
   passwordHash   String?          @map("password_hash")
   createdAt      DateTime         @default(now()) @map("created_at")
@@ -22,8 +21,64 @@ model User {
   roomMembership RoomMembership[]
   roomMessages   RoomMessage[]
   purchases      UserPurchase[]
+  refreshSessions RefreshSession[]
+  blocksMade      Block[]  @relation("blocks_made")
+  blocksReceived  Block[]  @relation("blocks_received")
+  reportsMade     Report[] @relation("reports_made")
+  reportsReceived Report[] @relation("reports_received")
 
   @@map("users")
+}
+
+model Block {
+  id        String   @id @default(uuid())
+  blockerId String   @map("blocker_id")
+  blockedId String   @map("blocked_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  blocker User @relation("blocks_made", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("blocks_received", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+  @@map("blocks")
+}
+
+model Report {
+  id         String   @id @default(uuid())
+  reporterId String   @map("reporter_id")
+  reportedId String   @map("reported_id")
+  reason     String
+  details    String?
+  status     String   @default("open") // open | reviewed | dismissed
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  reporter User @relation("reports_made", fields: [reporterId], references: [id], onDelete: Cascade)
+  reported User @relation("reports_received", fields: [reportedId], references: [id], onDelete: Cascade)
+
+  @@index([reportedId])
+  @@index([status, createdAt])
+  @@map("reports")
+}
+
+model RefreshSession {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  tokenHash     String    @unique @map("token_hash")
+  userAgent     String?   @map("user_agent")
+  ipAddress     String?   @map("ip_address")
+  expiresAt     DateTime  @map("expires_at")
+  revokedAt     DateTime? @map("revoked_at")
+  replacedById  String?   @unique @map("replaced_by_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replacedBy  RefreshSession? @relation("refresh_session_replacement", fields: [replacedById], references: [id], onDelete: SetNull)
+  replacedFor RefreshSession? @relation("refresh_session_replacement")
+
+  @@index([userId, revokedAt, expiresAt])
+  @@map("refresh_sessions")
 }
 
 model Profile {
@@ -152,14 +207,18 @@ model Product {
 }
 
 model UserPurchase {
-  id          String    @id @default(uuid())
-  userId      String    @map("user_id")
-  productId   String    @map("product_id")
-  status      String    @default("active") // active | expired | cancelled
-  expiresAt   DateTime? @map("expires_at")
-  cancelledAt DateTime? @map("cancelled_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  id                String    @id @default(uuid())
+  userId            String    @map("user_id")
+  productId         String    @map("product_id")
+  status            String    @default("pending") // pending | active | failed | expired | cancelled
+  merchantReference String    @unique @map("merchant_reference")
+  gatewayPaymentId  String?   @unique @map("gateway_payment_id")
+  amountInCents     Int       @map("amount_in_cents")
+  currency          String    @default("ZAR")
+  expiresAt         DateTime? @map("expires_at")
+  cancelledAt       DateTime? @map("cancelled_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)

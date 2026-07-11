@@ -38,6 +38,18 @@ services:
           type: keyvalue
           name: mixit-redis
           property: connectionString
+      # PUBLIC_API_URL must match this service's real Render URL — set it
+      # after the first deploy (Render assigns the URL at creation time).
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: PAYFAST_MODE
+        value: sandbox
+      - key: PAYFAST_MERCHANT_ID
+        sync: false
+      - key: PAYFAST_MERCHANT_KEY
+        sync: false
+      - key: PAYFAST_PASSPHRASE
+        sync: false
 
 databases:
   - name: mixit-db

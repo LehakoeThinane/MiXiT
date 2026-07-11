@@ -8,8 +8,9 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { getConversations } from '@/lib/messaging-api';
 import { getReceivedVibes } from '@/lib/matching-api';
 import { registerForPushNotifications } from '@/lib/notifications';
-import { connectSocket, disconnectSocket } from '@/lib/socket-client';
+import { connectSocket, disconnectSocket, getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
+import { useTypingStore } from '@/stores/typing-store';
 import { useUnreadStore } from '@/stores/unread-store';
 
 export default function TabLayout() {
@@ -53,6 +54,34 @@ export default function TabLayout() {
     return () => {
       // only disconnect when layout unmounts (app close / sign-out navigation)
       disconnectSocket();
+    };
+  }, [accessToken]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    const socket = getSocket();
+    if (!socket) return;
+
+    const setTyping = useTypingStore.getState().setTyping;
+    const clearTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+
+    const onTypingStart = ({ senderId }: { senderId: string }) => {
+      setTyping(senderId, true);
+      clearTimeout(clearTimers[senderId]);
+      // typing:stop can be dropped on disconnect — fail safe back to not-typing
+      clearTimers[senderId] = setTimeout(() => setTyping(senderId, false), 6000);
+    };
+    const onTypingStop = ({ senderId }: { senderId: string }) => {
+      clearTimeout(clearTimers[senderId]);
+      setTyping(senderId, false);
+    };
+
+    socket.on('typing:start', onTypingStart);
+    socket.on('typing:stop', onTypingStop);
+    return () => {
+      socket.off('typing:start', onTypingStart);
+      socket.off('typing:stop', onTypingStop);
+      Object.values(clearTimers).forEach(clearTimeout);
     };
   }, [accessToken]);
   return (

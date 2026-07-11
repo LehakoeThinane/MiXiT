@@ -1,11 +1,12 @@
 import bcrypt from 'bcryptjs';
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
 import { logger } from '../../shared/utils/logger.js';
-import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../shared/auth/jwt.js';
+import { hashToken, signAccessToken, signRefreshToken, verifyRefreshToken } from '../../shared/auth/jwt.js';
 
 const BCRYPT_ROUNDS = 10;
+const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 type RegisterBody = { phone: string; password: string };
 type LoginBody = { phone: string; password: string };
@@ -52,13 +53,21 @@ function isValidPhone(phone: string) {
   return /^\+?[1-9]\d{7,14}$/.test(phone);
 }
 
-function issueTokens(userId: string, phone: string) {
-  return {
-    accessToken: signAccessToken(userId, phone),
-    refreshToken: signRefreshToken(userId),
-    tokenType: 'bearer',
-    expiresIn: '3600',
-  };
+async function issueTokens(userId: string, phone: string, req: FastifyRequest) {
+  const accessToken = signAccessToken(userId, phone);
+  const refreshToken = signRefreshToken(userId);
+
+  await prisma.refreshSession.create({
+    data: {
+      userId,
+      tokenHash: hashToken(refreshToken),
+      userAgent: req.headers['user-agent'] ?? null,
+      ipAddress: req.ip ?? null,
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+    },
+  });
+
+  return { accessToken, refreshToken, tokenType: 'bearer', expiresIn: '3600' };
 }
 
 const authRoutes: FastifyPluginAsync = async (fastify) => {
@@ -89,7 +98,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
       return {
         ok: true,
         user: { id: user.id, phone: user.phone },
-        tokens: issueTokens(user.id, user.phone),
+        tokens: await issueTokens(user.id, user.phone, req),
       };
     }
   );
@@ -117,7 +126,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
       return {
         ok: true,
         user: { id: user.id, phone: user.phone },
-        tokens: issueTokens(user.id, user.phone),
+        tokens: await issueTokens(user.id, user.phone, req),
       };
     }
   );
@@ -136,17 +145,38 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
     async (req, reply) => {
       try {
         const payload = verifyRefreshToken(req.body.refreshToken);
+        const tokenHash = hashToken(req.body.refreshToken);
+        const session = await prisma.refreshSession.findUnique({ where: { tokenHash } });
+
+        if (!session || session.revokedAt || session.expiresAt < new Date()) {
+          return reply.code(401).send({ ok: false, message: 'Refresh token expired' });
+        }
+
         const user = await prisma.user.findUnique({ where: { id: payload.sub } });
         if (!user) {
           return reply.code(401).send({ ok: false, message: 'User not found' });
         }
+
+        const accessToken = signAccessToken(user.id, user.phone);
+        const refreshToken = signRefreshToken(user.id);
+        const newSession = await prisma.refreshSession.create({
+          data: {
+            userId: user.id,
+            tokenHash: hashToken(refreshToken),
+            userAgent: req.headers['user-agent'] ?? null,
+            ipAddress: req.ip ?? null,
+            expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+          },
+        });
+        await prisma.refreshSession.update({
+          where: { id: session.id },
+          data: { revokedAt: new Date(), replacedById: newSession.id },
+        });
+
         return {
           ok: true,
           user: { id: user.id, phone: user.phone },
-          tokens: {
-            accessToken: signAccessToken(user.id, user.phone),
-            refreshToken: signRefreshToken(user.id),
-          },
+          tokens: { accessToken, refreshToken },
         };
       } catch {
         return reply.code(401).send({ ok: false, message: 'Refresh token expired' });
@@ -157,7 +187,14 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{ Body: LogoutBody }>(
     '/logout',
     { schema: logoutSchema },
-    async (_req) => ({ ok: true })
+    async (req) => {
+      const tokenHash = hashToken(req.body.refreshToken);
+      await prisma.refreshSession.updateMany({
+        where: { tokenHash, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      return { ok: true };
+    }
   );
 };
 

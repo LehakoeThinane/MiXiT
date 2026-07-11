@@ -347,9 +347,9 @@ export default function ProfileTabScreen() {
       Boolean(p.displayName),
       Boolean(p.bio?.trim()),
       Boolean(p.city?.trim()),
-      (p.photos as string[] | null)?.length > 0,
-      (p.interests as string[] | null)?.length > 0,
-      (p.intents as string[] | null)?.length > 0,
+      ((p.photos as string[] | null) ?? []).length > 0,
+      ((p.interests as string[] | null) ?? []).length > 0,
+      ((p.intents as string[] | null) ?? []).length > 0,
       Boolean(p.voiceIntroUrl),
     ];
     return Math.round((checks.filter(Boolean).length / checks.length) * 100);
@@ -652,6 +652,11 @@ export default function ProfileTabScreen() {
                 </Text>
               </View>
             ) : null}
+
+            <Pressable style={styles.premiumCard} onPress={() => router.push('/premium')}>
+              <Text style={styles.premiumCardTitle}>MiXiT Premium</Text>
+              <Text style={styles.premiumCardBody}>Unlimited vibes, priority in Discover, and more.</Text>
+            </Pressable>
 
             {isEditingProfile ? (
               <View style={styles.stepBlock}>
@@ -1547,6 +1552,25 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 8,
     marginBottom: 4,
+  },
+  premiumCard: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 16,
+    padding: 14,
+    gap: 4,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  premiumCardTitle: {
+    color: '#ffb08f',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  premiumCardBody: {
+    color: '#c6cbe2',
+    fontSize: 13,
   },
   completenessHeader: {
     gap: 2,

@@ -3,10 +3,10 @@ import { Redis } from 'ioredis';
 import { Server } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 
-import { ensureRedisConnection, redis } from '../cache/redis.js';
 import { extractBearerToken, verifyAccessToken } from '../auth/jwt.js';
 import { env } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
+import { isBlockedPair } from '../moderation/blocks.js';
 import { sendPushNotification } from '../push/expo-push.js';
 import { logger } from '../utils/logger.js';
 
@@ -85,25 +85,24 @@ export async function initSocketServer(app: FastifyInstance) {
       // non-fatal — user can still chat in rooms they navigate to
     }
 
-    try {
-      await ensureRedisConnection();
-      await redis.setex(`presence:${userId}`, 300, 'online');
-    } catch {
-      // presence tracking unavailable — non-fatal
-    }
     await prisma.profile.updateMany({
       where: { userId },
       data: { lastActive: new Date() },
     });
 
     socket.on('message:send', async (payload: { recipientId: string; content?: string; type?: string; mediaUrl?: string }) => {
-      if (!payload?.recipientId) return;
+      if (!payload?.recipientId || payload.recipientId === userId) return;
       if (!payload.content && !payload.mediaUrl) return;
+      if (payload.content && payload.content.length > 4000) return;
+
+      const type = payload.type ?? 'text';
+      if (!['text', 'voice', 'image'].includes(type)) return;
 
       const recipientExists = await prisma.user.findUnique({ where: { id: payload.recipientId }, select: { id: true } });
       if (!recipientExists) return;
 
-      const type = payload.type ?? 'text';
+      if (await isBlockedPair(userId, payload.recipientId)) return;
+
       const message = await prisma.message.create({
         data: {
           senderId: userId,
@@ -133,8 +132,12 @@ export async function initSocketServer(app: FastifyInstance) {
       sendPushNotification(recipientProfile?.pushToken, senderProfile?.displayName ?? 'Someone', preview, { type: 'message', senderId: userId }).catch(() => {});
     });
 
-    socket.on('room:join', ({ roomId }: { roomId: string }) => {
-      if (roomId) socket.join(`room:${roomId}`);
+    socket.on('room:join', async ({ roomId }: { roomId: string }) => {
+      if (!roomId) return;
+      const membership = await prisma.roomMembership.findUnique({
+        where: { roomId_userId: { roomId, userId } },
+      });
+      if (membership) socket.join(`room:${roomId}`);
     });
 
     socket.on('typing:start', ({ recipientId }: { recipientId: string }) => {
@@ -145,13 +148,6 @@ export async function initSocketServer(app: FastifyInstance) {
       if (recipientId) io?.to(`user:${recipientId}`).emit('typing:stop', { senderId: userId });
     });
 
-    socket.on('disconnect', async () => {
-      try {
-        await redis.del(`presence:${userId}`);
-      } catch {
-        // ignore — presence cleanup is best-effort
-      }
-    });
   });
 
   return io;

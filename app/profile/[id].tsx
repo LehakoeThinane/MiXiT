@@ -1,14 +1,23 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
+import { blockUser, reportUser, type ReportReason } from '@/lib/moderation-api';
 import { getPeerProfile } from '@/lib/profile-api';
+
+const REPORT_REASONS: { reason: ReportReason; label: string }[] = [
+  { reason: 'inappropriate_content', label: 'Inappropriate content' },
+  { reason: 'harassment', label: 'Harassment' },
+  { reason: 'fake_profile', label: 'Fake profile' },
+  { reason: 'spam', label: 'Spam' },
+];
 
 export default function PeerProfileScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const params = useLocalSearchParams<{ id: string; name?: string; initial?: string; online?: string }>();
   const userId = params.id ?? '';
   const fallbackName = params.name ?? 'MiXiT user';
@@ -24,6 +33,47 @@ export default function PeerProfileScreen() {
 
   const profile = profileQuery.data;
 
+  const blockMutation = useMutation({
+    mutationFn: () => blockUser(userId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['discover-candidates'] });
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      Alert.alert('User blocked', "You won't see each other anymore.");
+      router.back();
+    },
+    onError: (error) => Alert.alert('Could not block user', error instanceof Error ? error.message : 'Try again'),
+  });
+
+  const reportMutation = useMutation({
+    mutationFn: (reason: ReportReason) => reportUser(userId, reason),
+    onSuccess: () => Alert.alert('Report submitted', 'Thanks — our team will review this.'),
+    onError: (error) => Alert.alert('Could not submit report', error instanceof Error ? error.message : 'Try again'),
+  });
+
+  const handleOptions = () => {
+    Alert.alert('Profile options', undefined, [
+      {
+        text: 'Report user',
+        onPress: () =>
+          Alert.alert(
+            'Report this profile',
+            'Why are you reporting this user?',
+            REPORT_REASONS.map(({ reason, label }) => ({ text: label, onPress: () => reportMutation.mutate(reason) }))
+          ),
+      },
+      {
+        text: 'Block user',
+        style: 'destructive',
+        onPress: () =>
+          Alert.alert("Block this user?", "You won't see each other in Discover, Chats, or Vibes anymore.", [
+            { text: 'Block', style: 'destructive', onPress: () => blockMutation.mutate() },
+            { text: 'Cancel', style: 'cancel' },
+          ]),
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <LiquidBackdrop />
@@ -34,7 +84,9 @@ export default function PeerProfileScreen() {
           <Text style={styles.backText}>←</Text>
         </Pressable>
         <Text style={styles.headerTitle}>Profile</Text>
-        <View style={styles.backBtn} />
+        <Pressable onPress={handleOptions} style={styles.backBtn}>
+          <Text style={styles.backText}>⋯</Text>
+        </Pressable>
       </View>
 
       {profileQuery.isLoading ? (

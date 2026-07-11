@@ -39,8 +39,42 @@ function validateSupabaseUrl(input: string) {
   return value.replace(/\/+$/, '');
 }
 
+function validatePublicApiUrl(input: string) {
+  const value = input.trim();
+  if (!value) return '';
+  if (!/^https?:\/\//i.test(value)) {
+    throw new Error('PUBLIC_API_URL must be an http(s):// URL');
+  }
+  return value.replace(/\/+$/, '');
+}
+
+const DEV_JWT_SECRET_FALLBACK = 'dev-jwt-secret-do-not-use-in-production';
+
+function validateJwtSecret(input: string | undefined, nodeEnv: string) {
+  const value = input?.trim() ?? '';
+
+  if (!value) {
+    if (nodeEnv === 'production') {
+      throw new Error('JWT_SECRET is required in production');
+    }
+    return DEV_JWT_SECRET_FALLBACK;
+  }
+
+  if (nodeEnv === 'production' && value === DEV_JWT_SECRET_FALLBACK) {
+    throw new Error('JWT_SECRET must not use the development fallback value in production');
+  }
+
+  if (nodeEnv === 'production' && value.length < 32) {
+    throw new Error('JWT_SECRET must be at least 32 characters in production');
+  }
+
+  return value;
+}
+
+const nodeEnv = process.env.NODE_ENV ?? 'development';
+
 export const env = {
-  nodeEnv: process.env.NODE_ENV ?? 'development',
+  nodeEnv,
   host: process.env.HOST ?? '0.0.0.0',
   port: Number(process.env.PORT ?? 4000),
   corsOrigin: process.env.CORS_ORIGIN ?? '*',
@@ -49,5 +83,16 @@ export const env = {
   supabaseUrl: validateSupabaseUrl(process.env.SUPABASE_URL ?? ''),
   supabaseAnonKey: process.env.SUPABASE_ANON_KEY?.trim() ?? '',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? '',
-  jwtSecret: process.env.JWT_SECRET?.trim() || 'dev-jwt-secret-do-not-use-in-production',
+  jwtSecret: validateJwtSecret(process.env.JWT_SECRET, nodeEnv),
+  publicApiUrl: validatePublicApiUrl(process.env.PUBLIC_API_URL ?? ''),
+  payfastMerchantId: process.env.PAYFAST_MERCHANT_ID?.trim() ?? '',
+  payfastMerchantKey: process.env.PAYFAST_MERCHANT_KEY?.trim() ?? '',
+  payfastPassphrase: process.env.PAYFAST_PASSPHRASE?.trim() ?? '',
+  payfastMode: (process.env.PAYFAST_MODE?.trim().toLowerCase() === 'live' ? 'live' : 'sandbox') as
+    | 'live'
+    | 'sandbox',
 };
+
+if (nodeEnv === 'production' && env.payfastMode === 'live' && (!env.payfastMerchantId || !env.payfastMerchantKey)) {
+  throw new Error('PAYFAST_MERCHANT_ID and PAYFAST_MERCHANT_KEY are required when PAYFAST_MODE=live in production');
+}

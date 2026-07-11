@@ -7,6 +7,7 @@ export type ConversationSummary = {
   preview: string;
   lastMessageAt: string;
   online: boolean;
+  unread: boolean;
 };
 
 export type ThreadMessage = {

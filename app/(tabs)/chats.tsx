@@ -4,8 +4,9 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
-import { getConversations } from '@/lib/messaging-api';
+import { type ConversationSummary, getConversations } from '@/lib/messaging-api';
 import { useAuthStore } from '@/stores/auth-store';
+import { useTypingStore } from '@/stores/typing-store';
 
 function formatTimeLabel(value: string) {
   const date = new Date(value);
@@ -13,9 +14,25 @@ function formatTimeLabel(value: string) {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+const IGNORED_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+
+// Status dot repurposes the old MXit presence ball for message state, since
+// MiXiT doesn't track away/busy presence: green = fresh unread, red = an
+// unread message that's gone stale (ignored), amber = they're typing now.
+function getStatus(conversation: ConversationSummary, isTyping: boolean) {
+  if (isTyping) return { color: '#ffcc33', label: 'Typing…' };
+  if (conversation.unread) {
+    const age = Date.now() - new Date(conversation.lastMessageAt).getTime();
+    if (age > IGNORED_THRESHOLD_MS) return { color: '#ff3b30', label: 'Unread' };
+    return { color: '#4cd964', label: 'New message' };
+  }
+  return { color: '#4a90d9', label: null };
+}
+
 export default function ChatsScreen() {
   const router = useRouter();
   const isAuthenticated = useAuthStore((state) => Boolean(state.accessToken));
+  const typingPeerIds = useTypingStore((state) => state.typingPeerIds);
 
   const conversationsQuery = useQuery({
     queryKey: ['conversations'],
@@ -56,31 +73,37 @@ export default function ChatsScreen() {
         </View>
       ) : (
         <View style={styles.list}>
-          {conversations.map((conversation) => (
-            <Pressable
-              key={conversation.id}
-              style={styles.row}
-              onPress={() =>
-                router.push({
-                  pathname: '/chat/[id]',
-                  params: {
-                    id: conversation.id,
-                    name: conversation.name,
-                    initial: conversation.initial,
-                    online: conversation.online ? '1' : '0',
-                  },
-                })
-              }>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{conversation.initial}</Text>
-              </View>
-              <View style={styles.rowText}>
-                <Text style={styles.name}>{conversation.name}</Text>
-                <Text style={styles.preview}>{conversation.preview}</Text>
-              </View>
-              <Text style={styles.time}>{formatTimeLabel(conversation.lastMessageAt)}</Text>
-            </Pressable>
-          ))}
+          {conversations.map((conversation, index) => {
+            const status = getStatus(conversation, Boolean(typingPeerIds[conversation.id]));
+            return (
+              <Pressable
+                key={conversation.id}
+                style={[styles.row, index === conversations.length - 1 && styles.rowLast]}
+                onPress={() =>
+                  router.push({
+                    pathname: '/chat/[id]',
+                    params: {
+                      id: conversation.id,
+                      name: conversation.name,
+                      initial: conversation.initial,
+                      online: conversation.online ? '1' : '0',
+                    },
+                  })
+                }>
+                <View style={[styles.statusDot, { backgroundColor: status.color }]} />
+                <View style={styles.avatar}>
+                  <Text style={styles.avatarText}>{conversation.initial}</Text>
+                </View>
+                <View style={styles.rowText}>
+                  <Text style={styles.name}>{conversation.name}</Text>
+                  <Text style={[styles.preview, status.label && { color: status.color }]} numberOfLines={1}>
+                    {status.label ?? conversation.preview}
+                  </Text>
+                </View>
+                <Text style={styles.time}>{formatTimeLabel(conversation.lastMessageAt)}</Text>
+              </Pressable>
+            );
+          })}
         </View>
       )}
     </SafeAreaView>
@@ -142,22 +165,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   list: {
-    gap: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    overflow: 'hidden',
   },
   row: {
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
-    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.09)',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 9,
+  },
+  rowLast: {
+    borderBottomWidth: 0,
+  },
+  statusDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
   },
   avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: '#ff6b35',
     alignItems: 'center',
     justifyContent: 'center',
@@ -165,24 +199,25 @@ const styles = StyleSheet.create({
   avatarText: {
     color: '#f9fbff',
     fontWeight: '700',
-    fontSize: 17,
+    fontSize: 14,
   },
   rowText: {
     flex: 1,
   },
   name: {
     color: '#edf0ff',
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '700',
   },
   preview: {
-    color: '#cfd5ea',
-    marginTop: 2,
-    fontSize: 14,
+    color: '#a8afc9',
+    marginTop: 1,
+    fontSize: 12,
+    fontWeight: '600',
   },
   time: {
-    color: '#c4cae2',
-    fontSize: 12,
+    color: '#8991b3',
+    fontSize: 11,
     fontWeight: '600',
   },
 });

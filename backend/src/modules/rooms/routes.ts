@@ -132,13 +132,30 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{
     Params: { roomId: string };
     Body: { content: string };
-  }>('/:roomId/messages', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  }>(
+    '/:roomId/messages',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        body: {
+          type: 'object',
+          required: ['content'],
+          properties: { content: { type: 'string', minLength: 1, maxLength: 2000 } },
+        },
+      },
+    },
+    async (req, reply) => {
     const { roomId } = req.params;
     const { content } = req.body ?? {};
     if (!content?.trim()) return reply.code(400).send({ ok: false, message: 'content required' });
 
     const room = await prisma.room.findUnique({ where: { id: roomId }, select: { id: true } });
     if (!room) return reply.code(404).send({ ok: false, message: 'Room not found' });
+
+    const membership = await prisma.roomMembership.findUnique({
+      where: { roomId_userId: { roomId, userId: req.user.sub } },
+    });
+    if (!membership) return reply.code(403).send({ ok: false, message: 'Join the room before posting' });
 
     const [message, senderProfile] = await Promise.all([
       prisma.roomMessage.create({

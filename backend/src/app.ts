@@ -1,4 +1,5 @@
 import cors from '@fastify/cors';
+import formbody from '@fastify/formbody';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
@@ -6,6 +7,7 @@ import Fastify from 'fastify';
 import authRoutes from './modules/auth/routes.js';
 import matchingRoutes from './modules/matching/routes.js';
 import messagingRoutes from './modules/messaging/routes.js';
+import moderationRoutes from './modules/moderation/routes.js';
 import paymentRoutes from './modules/payments/routes.js';
 import profileRoutes from './modules/profiles/routes.js';
 import roomsRoutes from './modules/rooms/routes.js';
@@ -28,6 +30,7 @@ export function buildApp() {
 
   app.register(helmet);
   app.register(cors, { origin: env.corsOrigin });
+  app.register(formbody); // PayFast's ITN webhook posts application/x-www-form-urlencoded
   app.register(rateLimit, {
     global: true,
     max: 200,
@@ -74,6 +77,7 @@ export function buildApp() {
   app.register(messagingRoutes, { prefix: '/messaging' });
   app.register(roomsRoutes, { prefix: '/rooms' });
   app.register(paymentRoutes, { prefix: '/payments' });
+  app.register(moderationRoutes, { prefix: '/moderation' });
   app.register(async (instance) => {
     await initSocketServer(instance);
   });

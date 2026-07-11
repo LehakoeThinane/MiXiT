@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
 import { env } from '../config/env.js';
@@ -38,6 +39,10 @@ export function verifyRefreshToken(token: string): { sub: string } {
   const payload = jwt.verify(token, env.jwtSecret) as RefreshTokenPayload;
   if (payload.type !== 'refresh') throw new Error('Not a refresh token');
   return { sub: payload.sub };
+}
+
+export function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 
 export function extractBearerToken(authorization: string | string[] | undefined): string | null {

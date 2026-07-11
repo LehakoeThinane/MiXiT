@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { getBlockedUserIds, isBlockedPair } from '../../shared/moderation/blocks.js';
 import { sendPushNotification } from '../../shared/push/expo-push.js';
 
 // ---------------------------------------------------------------------------
@@ -204,14 +205,18 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
       const myInterests = parseJsonStringArray(myProfile?.interests);
       const myIntents = parseJsonStringArray(myProfile?.intents);
 
-      // Exclude users we already vibed
-      const mySentVibes = await prisma.vibe.findMany({
-        where: { fromUserId: currentUserId },
-        select: { toUserId: true },
-      });
-      const excludedUserIds = new Set<string>(
-        mySentVibes.map((item) => item.toUserId)
-      );
+      // Exclude users we already vibed, and anyone blocked in either direction
+      const [mySentVibes, blockedUserIds] = await Promise.all([
+        prisma.vibe.findMany({
+          where: { fromUserId: currentUserId },
+          select: { toUserId: true },
+        }),
+        getBlockedUserIds(currentUserId),
+      ]);
+      const excludedUserIds = new Set<string>([
+        ...mySentVibes.map((item) => item.toUserId),
+        ...blockedUserIds,
+      ]);
       excludedUserIds.add(currentUserId);
 
       const profiles = await prisma.profile.findMany({
@@ -284,6 +289,10 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
     });
     if (!targetUser) {
       return reply.code(404).send({ ok: false, message: 'User not found' });
+    }
+
+    if (await isBlockedPair(fromUserId, toUserId)) {
+      return reply.code(403).send({ ok: false, message: 'Cannot vibe this user' });
     }
 
     await prisma.vibe.upsert({

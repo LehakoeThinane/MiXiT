@@ -54,6 +54,7 @@ function ProfileCard({
         </View>
         <View style={styles.avatarCircle}>
           <Text style={styles.avatarText}>{profile.initial}</Text>
+          <View style={[styles.presenceDot, profile.online ? styles.presenceDotOnline : styles.presenceDotOffline]} />
         </View>
       </View>
 
@@ -283,7 +284,6 @@ export default function DiscoverScreen() {
         <FlashList
           data={profiles}
           keyExtractor={(item) => item.id}
-          estimatedItemSize={440}
           contentContainerStyle={styles.listContent}
           renderItem={({ item, index }) => (
             <SwipeableCard
@@ -470,11 +470,28 @@ const styles = StyleSheet.create({
     backgroundColor: '#ff6b35',
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
   },
   avatarText: {
     fontSize: 52,
     color: '#f9fbff',
     fontWeight: '700',
+  },
+  presenceDot: {
+    position: 'absolute',
+    right: 6,
+    bottom: 6,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 3,
+    borderColor: '#2c3170',
+  },
+  presenceDotOnline: {
+    backgroundColor: '#4cd964',
+  },
+  presenceDotOffline: {
+    backgroundColor: '#4a90d9',
   },
   cardBody: {
     paddingHorizontal: 16,

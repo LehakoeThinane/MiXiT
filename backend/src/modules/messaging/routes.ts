@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { getBlockedUserIds, isBlockedPair } from '../../shared/moderation/blocks.js';
 import { sendPushNotification } from '../../shared/push/expo-push.js';
 import { getSocketServer } from '../../shared/realtime/socket.js';
 import { createSignedChatMediaUrl } from '../../shared/storage/supabase-storage.js';
@@ -49,6 +50,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get('/conversations', { preHandler: [fastify.authenticate] }, async (req) => {
     const currentUserId = req.user.sub;
+    const blockedUserIds = await getBlockedUserIds(currentUserId);
 
     const messages = await prisma.message.findMany({
       where: {
@@ -66,6 +68,10 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       take: 200,
     });
 
+    const unreadPeerIds = new Set(
+      messages.filter((m) => m.recipientId === currentUserId && !m.readAt).map((m) => m.senderId)
+    );
+
     const seenPeerIds = new Set<string>();
     const conversations: Array<{
       id: string;
@@ -74,6 +80,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       preview: string;
       lastMessageAt: string;
       online: boolean;
+      unread: boolean;
     }> = [];
 
     for (const message of messages) {
@@ -81,7 +88,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       const peer = isMine ? message.recipient : message.sender;
       const peerProfile = peer.profile;
 
-      if (seenPeerIds.has(peer.id)) continue;
+      if (seenPeerIds.has(peer.id) || blockedUserIds.has(peer.id)) continue;
       seenPeerIds.add(peer.id);
 
       conversations.push({
@@ -94,6 +101,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
           peerProfile?.lastActive !== null && peerProfile?.lastActive !== undefined
             ? Date.now() - peerProfile.lastActive.getTime() <= 5 * 60 * 1000
             : false,
+        unread: unreadPeerIds.has(peer.id),
       });
     }
 
@@ -154,7 +162,25 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post<{
     Body: SendMessageBody;
-  }>('/messages', { preHandler: [fastify.authenticate], config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }, async (req, reply) => {
+  }>(
+    '/messages',
+    {
+      preHandler: [fastify.authenticate],
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+      schema: {
+        body: {
+          type: 'object',
+          required: ['recipientId'],
+          properties: {
+            recipientId: { type: 'string', minLength: 1, maxLength: 36 },
+            content: { type: 'string', maxLength: 4000 },
+            type: { type: 'string', enum: ['text', 'voice', 'image'] },
+            mediaUrl: { type: 'string', maxLength: 2000 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
     const senderId = req.user.sub;
     const { recipientId, content, type = 'text', mediaUrl } = req.body;
 
@@ -163,6 +189,15 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
     }
     if (!content && !mediaUrl) {
       return reply.code(400).send({ ok: false, message: 'Message content is required' });
+    }
+
+    const recipient = await prisma.user.findUnique({ where: { id: recipientId }, select: { id: true } });
+    if (!recipient) {
+      return reply.code(404).send({ ok: false, message: 'Recipient not found' });
+    }
+
+    if (await isBlockedPair(senderId, recipientId)) {
+      return reply.code(403).send({ ok: false, message: 'Cannot message this user' });
     }
 
     const message = await prisma.message.create({
