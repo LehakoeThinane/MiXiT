@@ -112,7 +112,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const token = useAuthStore.getState().accessToken;
   const hasJsonBody = body !== undefined && body !== null;
 
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    'ngrok-skip-browser-warning': '1',
+  };
   if (hasJsonBody) {
     headers['Content-Type'] = 'application/json';
   }
@@ -156,7 +158,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   if (!response.ok) {
-    const message = typeof json.message === 'string' ? json.message : 'Request failed';
+    const message = typeof json.message === 'string' ? json.message : `Request failed (${response.status})`;
     throw new ApiError(response.status, message, json);
   }
 

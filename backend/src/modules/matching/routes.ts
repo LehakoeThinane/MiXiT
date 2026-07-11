@@ -1,6 +1,8 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { getBlockedUserIds, isBlockedPair } from '../../shared/moderation/blocks.js';
+import { sendPushNotification } from '../../shared/push/expo-push.js';
 
 // ---------------------------------------------------------------------------
 // Scoring helpers
@@ -154,10 +156,16 @@ function mapProfileToDiscoverCard(
     bio: string | null;
     interests: unknown;
     lastActive: Date | null;
+    voiceIntroUrl?: string | null;
+    voiceIntroDurationSec?: number | null;
   },
   distance: string
 ) {
   const tags = deriveTagsFromProfile(profile.interests, profile.bio);
+  const durationSec = profile.voiceIntroDurationSec ?? 0;
+  const voiceDuration = durationSec > 0
+    ? `0:${String(durationSec).padStart(2, '0')}`
+    : '0:00';
 
   return {
     id: profile.userId,
@@ -168,7 +176,8 @@ function mapProfileToDiscoverCard(
     tags,
     bio: profile.bio ?? 'MiXiT member',
     initial: profile.displayName.slice(0, 1).toUpperCase(),
-    voiceDuration: '0:20',
+    voiceIntroUrl: profile.voiceIntroUrl ?? null,
+    voiceDuration,
     online:
       profile.lastActive !== null
         ? Date.now() - profile.lastActive.getTime() <= 5 * 60 * 1000
@@ -184,7 +193,7 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
   // ---- Discover candidates (scored) ----
   fastify.get(
     '/candidates',
-    { preHandler: [fastify.authenticate] },
+    { preHandler: [fastify.authenticate], config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
     async (req) => {
       const currentUserId = req.user.sub;
 
@@ -196,19 +205,24 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
       const myInterests = parseJsonStringArray(myProfile?.interests);
       const myIntents = parseJsonStringArray(myProfile?.intents);
 
-      // Exclude users we already vibed
-      const mySentVibes = await prisma.vibe.findMany({
-        where: { fromUserId: currentUserId },
-        select: { toUserId: true },
-      });
-      const excludedUserIds = new Set<string>(
-        mySentVibes.map((item) => item.toUserId)
-      );
+      // Exclude users we already vibed, and anyone blocked in either direction
+      const [mySentVibes, blockedUserIds] = await Promise.all([
+        prisma.vibe.findMany({
+          where: { fromUserId: currentUserId },
+          select: { toUserId: true },
+        }),
+        getBlockedUserIds(currentUserId),
+      ]);
+      const excludedUserIds = new Set<string>([
+        ...mySentVibes.map((item) => item.toUserId),
+        ...blockedUserIds,
+      ]);
       excludedUserIds.add(currentUserId);
 
       const profiles = await prisma.profile.findMany({
         where: {
           userId: { notIn: Array.from(excludedUserIds) },
+          completedAt: { not: null },
         },
         orderBy: { updatedAt: 'desc' },
         take: 40,
@@ -243,7 +257,20 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
   // ---- Send a vibe ----
   fastify.post<{
     Body: { toUserId: string };
-  }>('/vibe', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+  }>(
+    '/vibe',
+    {
+      preHandler: [fastify.authenticate],
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+      schema: {
+        body: {
+          type: 'object',
+          required: ['toUserId'],
+          properties: { toUserId: { type: 'string', minLength: 1, maxLength: 36 } },
+        },
+      },
+    },
+    async (req, reply) => {
     const fromUserId = req.user.sub;
     const { toUserId } = req.body;
 
@@ -262,6 +289,10 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
     });
     if (!targetUser) {
       return reply.code(404).send({ ok: false, message: 'User not found' });
+    }
+
+    if (await isBlockedPair(fromUserId, toUserId)) {
+      return reply.code(403).send({ ok: false, message: 'Cannot vibe this user' });
     }
 
     await prisma.vibe.upsert({
@@ -294,6 +325,15 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
         },
         data: { matchedAt: now },
       });
+
+      const [fromProfile, toProfile] = await Promise.all([
+        prisma.profile.findUnique({ where: { userId: fromUserId }, select: { displayName: true, pushToken: true } }),
+        prisma.profile.findUnique({ where: { userId: toUserId }, select: { displayName: true, pushToken: true } }),
+      ]);
+      await Promise.all([
+        sendPushNotification(fromProfile?.pushToken, "It's a match!", `You and ${toProfile?.displayName ?? 'someone'} vibed each other`, { type: 'match', userId: toUserId }),
+        sendPushNotification(toProfile?.pushToken, "It's a match!", `You and ${fromProfile?.displayName ?? 'someone'} vibed each other`, { type: 'match', userId: fromUserId }),
+      ]);
     }
 
     return { ok: true, matched };
@@ -387,6 +427,8 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
               bio: theirProfile.bio,
               interests: theirProfile.interests,
               lastActive: theirProfile.lastActive,
+              voiceIntroUrl: theirProfile.voiceIntroUrl,
+              voiceIntroDurationSec: theirProfile.voiceIntroDurationSec,
             },
             distance
           );

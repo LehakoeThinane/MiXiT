@@ -35,12 +35,16 @@ yarn-error.*
 backend/.env
 backend/.env.*
 !backend/.env.example
+.env
 
 # generated prisma client (regenerated on build)
 backend/src/generated/
 
 # typescript
 *.tsbuildinfo
+
+# local Claude Code tool state
+.claude/
 
 app-example
 

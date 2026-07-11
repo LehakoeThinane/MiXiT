@@ -1,13 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Audio } from 'expo-av';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
-import { getThreadMessages, sendMessage, type ThreadMessage } from '@/lib/messaging-api';
-import { connectSocket, disconnectSocket, getSocket } from '@/lib/socket-client';
+import { getThreadMessages, requestMediaUploadUrl, sendMessage, type ThreadMessage, uploadMediaToStorage } from '@/lib/messaging-api';
+import { getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
+import { useUnreadStore } from '@/stores/unread-store';
 
 function formatTime(value: string) {
   const date = new Date(value);
@@ -21,7 +25,19 @@ export default function ChatScreen() {
   const params = useLocalSearchParams<{ id?: string; name?: string; initial?: string; online?: string }>();
   const peerUserId = params.id ?? '';
   const { user, accessToken } = useAuthStore();
+  const markChatOpened = useUnreadStore((state) => state.markChatOpened);
   const [draft, setDraft] = useState('');
+  const [peerTyping, setPeerTyping] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSecs, setRecordingSecs] = useState(0);
+  const [isSendingVoice, setIsSendingVoice] = useState(false);
+  const [playingId, setPlayingId] = useState<string | null>(null);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const recordingTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
+  const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingDot = useRef(new Animated.Value(0)).current;
+  const scrollRef = useRef<ScrollView>(null);
 
   const threadQuery = useQuery({
     queryKey: ['thread', peerUserId],
@@ -54,9 +70,10 @@ export default function ChatScreen() {
   });
 
   useEffect(() => {
-    if (!accessToken || !peerUserId) return;
+    if (!peerUserId) return;
+    const socket = getSocket();
+    if (!socket) return;
 
-    const socket = connectSocket(accessToken);
     const onReceived = (message: ThreadMessage) => {
       if (
         !(
@@ -66,7 +83,6 @@ export default function ChatScreen() {
       ) {
         return;
       }
-
       queryClient.setQueryData<ThreadMessage[]>(['thread', peerUserId], (current) => {
         const existing = current ?? [];
         if (existing.some((item) => item.id === message.id)) return existing;
@@ -75,23 +91,203 @@ export default function ChatScreen() {
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });
     };
 
+    const onRead = ({ messageIds }: { byUserId: string; messageIds: string[] }) => {
+      const idSet = new Set(messageIds);
+      queryClient.setQueryData<ThreadMessage[]>(['thread', peerUserId], (current) =>
+        current?.map((m) => (idSet.has(m.id) ? { ...m, readAt: new Date().toISOString() } : m)) ?? []
+      );
+    };
+
     socket.on('message:received', onReceived);
     socket.on('message:sent', onReceived);
+    socket.on('message:read', onRead);
 
     return () => {
       socket.off('message:received', onReceived);
       socket.off('message:sent', onReceived);
-      const activeSocket = getSocket();
-      if (activeSocket && activeSocket.listeners('message:received').length === 0) {
-        disconnectSocket();
-      }
+      socket.off('message:read', onRead);
     };
-  }, [accessToken, peerUserId, queryClient, user?.id]);
+  }, [peerUserId, queryClient, user?.id]);
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !peerUserId) return;
+
+    const onTypingStart = ({ senderId }: { senderId: string }) => {
+      if (senderId !== peerUserId) return;
+      setPeerTyping(true);
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(typingDot, { toValue: 1, duration: 400, useNativeDriver: true }),
+          Animated.timing(typingDot, { toValue: 0, duration: 400, useNativeDriver: true }),
+        ])
+      ).start();
+    };
+    const onTypingStop = ({ senderId }: { senderId: string }) => {
+      if (senderId !== peerUserId) return;
+      setPeerTyping(false);
+      typingDot.stopAnimation();
+      typingDot.setValue(0);
+    };
+
+    socket.on('typing:start', onTypingStart);
+    socket.on('typing:stop', onTypingStop);
+    return () => {
+      socket.off('typing:start', onTypingStart);
+      socket.off('typing:stop', onTypingStop);
+    };
+  }, [peerUserId, typingDot]);
+
+  const startRecording = async () => {
+    try {
+      const { granted } = await Audio.requestPermissionsAsync();
+      if (!granted) return;
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const { recording } = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      recordingRef.current = recording;
+      setIsRecording(true);
+      setRecordingSecs(0);
+      recordingTimer.current = setInterval(() => setRecordingSecs((s) => s + 1), 1000);
+    } catch {
+      // permission denied or device error — silently ignore
+    }
+  };
+
+  const cancelRecording = async () => {
+    if (recordingTimer.current) clearInterval(recordingTimer.current);
+    try {
+      await recordingRef.current?.stopAndUnloadAsync();
+    } catch {}
+    recordingRef.current = null;
+    setIsRecording(false);
+    setRecordingSecs(0);
+  };
+
+  const stopAndSendRecording = async () => {
+    if (!recordingRef.current) return;
+    if (recordingTimer.current) clearInterval(recordingTimer.current);
+    setIsRecording(false);
+    setIsSendingVoice(true);
+    const duration = recordingSecs;
+    try {
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
+      recordingRef.current = null;
+      if (!uri) throw new Error('No recording URI');
+
+      const filename = `voice-${Date.now()}.m4a`;
+      const { signedUrl, publicUrl } = await requestMediaUploadUrl(filename, 'audio/m4a');
+      await uploadMediaToStorage(signedUrl, uri, 'audio/m4a');
+
+      await sendMessage({
+        recipientId: peerUserId,
+        type: 'voice',
+        content: String(duration),
+        mediaUrl: publicUrl,
+      });
+      await queryClient.invalidateQueries({ queryKey: ['thread', peerUserId] });
+    } catch {
+      // upload or send failed — silently reset
+    } finally {
+      setIsSendingVoice(false);
+      setRecordingSecs(0);
+    }
+  };
+
+  const togglePlayVoice = async (message: ThreadMessage) => {
+    if (playingId === message.id) {
+      await soundRef.current?.pauseAsync();
+      setPlayingId(null);
+      return;
+    }
+    if (soundRef.current) {
+      await soundRef.current.unloadAsync();
+      soundRef.current = null;
+    }
+    if (!message.mediaUrl) return;
+    setPlayingId(message.id);
+    try {
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: message.mediaUrl },
+        { shouldPlay: true },
+        (status) => {
+          if (status.isLoaded && status.didJustFinish) {
+            setPlayingId(null);
+            sound.unloadAsync();
+          }
+        }
+      );
+      soundRef.current = sound;
+    } catch {
+      setPlayingId(null);
+    }
+  };
+
+  const sendImageMessage = async () => {
+    const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!granted) return;
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      quality: 0.8,
+    });
+    if (result.canceled || !result.assets[0]) return;
+
+    const asset = result.assets[0];
+    const rawMime = asset.mimeType ?? 'image/jpeg';
+    const mimeType = rawMime === 'image/jpg' ? 'image/jpeg' : rawMime;
+    const ext = mimeType.split('/')[1] ?? 'jpg';
+    const filename = `image-${Date.now()}.${ext}`;
+
+    try {
+      const { signedUrl, publicUrl } = await requestMediaUploadUrl(filename, mimeType);
+      await uploadMediaToStorage(signedUrl, asset.uri, mimeType);
+      await sendMessage({ recipientId: peerUserId, type: 'image', mediaUrl: publicUrl });
+      await queryClient.invalidateQueries({ queryKey: ['thread', peerUserId] });
+    } catch (err) {
+      Alert.alert('Image failed', err instanceof Error ? err.message : 'Could not send image.');
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      soundRef.current?.unloadAsync();
+      recordingRef.current?.stopAndUnloadAsync();
+      if (recordingTimer.current) clearInterval(recordingTimer.current);
+    };
+  }, []);
+
+  const handleDraftChange = (text: string) => {
+    setDraft(text);
+    const socket = getSocket();
+    if (!socket || !peerUserId) return;
+    socket.emit('typing:start', { recipientId: peerUserId });
+    if (typingTimeout.current) clearTimeout(typingTimeout.current);
+    typingTimeout.current = setTimeout(() => {
+      socket.emit('typing:stop', { recipientId: peerUserId });
+    }, 1500);
+  };
 
   const canSend = useMemo(() => draft.trim().length > 0 && !sendMutation.isPending, [draft, sendMutation.isPending]);
 
+  useEffect(() => {
+    if (peerUserId) markChatOpened(peerUserId);
+  }, [peerUserId, markChatOpened]);
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      scrollRef.current?.scrollToEnd({ animated: false });
+    }
+  }, [messages.length]);
+
   return (
-    <SafeAreaView style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}>
+      <SafeAreaView style={styles.container}>
       <LiquidBackdrop />
       <Stack.Screen options={{ headerShown: false }} />
 
@@ -99,16 +295,25 @@ export default function ChatScreen() {
         <Text style={styles.backButton} onPress={() => router.back()}>
           ←
         </Text>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>{peerInitial}</Text>
-        </View>
-        <View style={styles.headerTextWrap}>
-          <Text style={styles.name}>{peerName}</Text>
-          <Text style={styles.online}>{peerOnline ? '• online' : '• offline'}</Text>
-        </View>
+        <Pressable
+          style={styles.headerProfile}
+          onPress={() =>
+            router.push({
+              pathname: '/profile/[id]',
+              params: { id: peerUserId, name: peerName, initial: peerInitial, online: params.online ?? '0' },
+            })
+          }>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{peerInitial}</Text>
+          </View>
+          <View style={styles.headerTextWrap}>
+            <Text style={styles.name}>{peerName}</Text>
+            <Text style={styles.online}>{peerOnline ? '• online' : '• offline'}</Text>
+          </View>
+        </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={styles.messages}>
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.messages}>
         {threadQuery.isLoading ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>Loading messages...</Text>
@@ -125,49 +330,113 @@ export default function ChatScreen() {
           return (
             <View key={message.id} style={[styles.messageWrap, mine ? styles.mineWrap : styles.theirWrap]}>
               {message.type === 'voice' ? (
-                <View style={[styles.voiceBubble, mine ? styles.mineVoice : styles.theirVoice]}>
-                  <Text style={styles.voicePlay}>▶</Text>
+                <Pressable
+                  style={[styles.voiceBubble, mine ? styles.mineVoice : styles.theirVoice]}
+                  onPress={() => togglePlayVoice(message)}>
+                  <Text style={styles.voicePlay}>{playingId === message.id ? '⏸' : '▶'}</Text>
                   <View style={styles.voiceWave} />
-                  <Text style={styles.voiceDuration}>0:20</Text>
-                </View>
+                  <Text style={styles.voiceDuration}>
+                    {message.content && !Number.isNaN(Number(message.content))
+                      ? `0:${String(Number(message.content)).padStart(2, '0')}`
+                      : '0:00'}
+                  </Text>
+                </Pressable>
+              ) : message.type === 'image' && message.mediaUrl ? (
+                <Image
+                  source={{ uri: message.mediaUrl }}
+                  style={styles.imageBubble}
+                  contentFit="cover"
+                />
               ) : (
                 <View style={[styles.bubble, mine ? styles.mineBubble : styles.theirBubble]}>
                   <Text style={styles.messageText}>{message.content ?? ''}</Text>
                 </View>
               )}
-              <Text style={styles.timeText}>{formatTime(message.createdAt)}</Text>
+              <View style={styles.timeRow}>
+                <Text style={styles.timeText}>{formatTime(message.createdAt)}</Text>
+                {mine ? (
+                  <Text style={[styles.tick, message.readAt ? styles.tickRead : styles.tickSent]}>
+                    {message.readAt ? '✓✓' : '✓'}
+                  </Text>
+                ) : null}
+              </View>
             </View>
           );
         })}
       </ScrollView>
 
-      <View style={styles.inputBar}>
-        <View style={styles.smallAction}>
-          <Text style={styles.smallActionText}>🎙</Text>
+      {peerTyping ? (
+        <View style={styles.typingRow}>
+          <View style={styles.typingBubble}>
+            {[0, 150, 300].map((delay) => (
+              <Animated.View
+                key={delay}
+                style={[
+                  styles.typingDot,
+                  {
+                    opacity: typingDot,
+                    transform: [{ translateY: Animated.multiply(typingDot, new Animated.Value(-3)) }],
+                  },
+                ]}
+              />
+            ))}
+          </View>
+          <Text style={styles.typingLabel}>{peerName} is typing</Text>
         </View>
-        <View style={styles.smallAction}>
-          <Text style={styles.smallActionText}>📷</Text>
+      ) : null}
+
+      {isRecording || isSendingVoice ? (
+        <View style={styles.inputBar}>
+          <Pressable style={styles.smallAction} onPress={cancelRecording} disabled={isSendingVoice}>
+            <Text style={styles.smallActionText}>✕</Text>
+          </Pressable>
+          <View style={styles.recordingIndicator}>
+            <View style={styles.recordingDot} />
+            <Text style={styles.recordingTimer}>
+              {isSendingVoice ? 'Sending...' : `0:${String(recordingSecs).padStart(2, '0')}`}
+            </Text>
+          </View>
+          <Pressable
+            style={[styles.sendAction, isSendingVoice && styles.sendActionDisabled]}
+            disabled={isSendingVoice}
+            onPress={stopAndSendRecording}>
+            <Text style={styles.sendActionText}>➤</Text>
+          </Pressable>
         </View>
-        <TextInput
-          placeholder="Message..."
-          placeholderTextColor="#7f87ad"
-          style={styles.input}
-          value={draft}
-          onChangeText={setDraft}
-          editable={!sendMutation.isPending}
-        />
-        <Pressable
-          style={[styles.sendAction, !canSend && styles.sendActionDisabled]}
-          disabled={!canSend}
-          onPress={() => sendMutation.mutate(draft.trim())}>
-          <Text style={styles.sendActionText}>➤</Text>
-        </Pressable>
-      </View>
+      ) : (
+        <View style={styles.inputBar}>
+          <Pressable style={styles.smallAction} onPress={startRecording}>
+            <Text style={styles.smallActionText}>🎙</Text>
+          </Pressable>
+          <Pressable style={styles.smallAction} onPress={sendImageMessage}>
+            <Text style={styles.smallActionText}>📷</Text>
+          </Pressable>
+          <TextInput
+            placeholder="Message..."
+            placeholderTextColor="#7f87ad"
+            style={styles.input}
+            value={draft}
+            onChangeText={handleDraftChange}
+            editable={!sendMutation.isPending}
+          />
+          <Pressable
+            style={[styles.sendAction, !canSend && styles.sendActionDisabled]}
+            disabled={!canSend}
+            onPress={() => sendMutation.mutate(draft.trim())}>
+            <Text style={styles.sendActionText}>➤</Text>
+          </Pressable>
+        </View>
+      )}
     </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+    backgroundColor: '#060710',
+  },
   container: {
     flex: 1,
     backgroundColor: '#060710',
@@ -180,6 +449,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.14)',
+  },
+  headerProfile: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   backButton: {
     color: '#e0e4f5',
@@ -194,7 +469,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#ff6b35',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
   },
   avatarText: {
     color: '#f6f8ff',
@@ -215,9 +489,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   messages: {
+    flexGrow: 1,
     paddingHorizontal: 14,
     paddingTop: 14,
-    paddingBottom: 90,
+    paddingBottom: 14,
     gap: 10,
   },
   emptyState: {
@@ -254,16 +529,14 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   mineBubble: {
-    backgroundColor: 'rgba(255,107,53,0.76)',
-    borderBottomRightRadius: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.28)',
+    backgroundColor: '#ff6b35',
+    borderBottomRightRadius: 4,
   },
   theirBubble: {
-    backgroundColor: 'rgba(255,255,255,0.11)',
-    borderBottomLeftRadius: 6,
+    backgroundColor: '#1e2340',
+    borderBottomLeftRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
+    borderColor: 'rgba(255,255,255,0.12)',
   },
   messageText: {
     color: '#f4f6ff',
@@ -271,10 +544,31 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     fontWeight: '600',
   },
+  timeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 4,
+  },
   timeText: {
     color: '#c7cce2',
     fontSize: 12,
-    marginTop: 4,
+  },
+  tick: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  tickSent: {
+    color: '#6b7299',
+  },
+  tickRead: {
+    color: '#ff6b35',
+  },
+  imageBubble: {
+    width: 220,
+    height: 220,
+    borderRadius: 14,
+    overflow: 'hidden',
   },
   voiceBubble: {
     borderRadius: 14,
@@ -307,11 +601,36 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 12,
   },
+  typingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+    gap: 8,
+  },
+  typingBubble: {
+    flexDirection: 'row',
+    gap: 4,
+    backgroundColor: '#1e2340',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  typingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#9199bc',
+  },
+  typingLabel: {
+    color: '#9199bc',
+    fontSize: 13,
+    fontStyle: 'italic',
+  },
   inputBar: {
-    position: 'absolute',
-    bottom: 12,
-    left: 12,
-    right: 12,
+    marginHorizontal: 12,
+    marginBottom: 12,
+    marginTop: 6,
     height: 48,
     borderRadius: 24,
     backgroundColor: 'rgba(255,255,255,0.12)',
@@ -351,6 +670,23 @@ const styles = StyleSheet.create({
   },
   sendActionDisabled: {
     opacity: 0.5,
+  },
+  recordingIndicator: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  recordingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#ff3b30',
+  },
+  recordingTimer: {
+    color: '#eef0fc',
+    fontSize: 15,
+    fontWeight: '600',
   },
   sendActionText: {
     color: '#131726',

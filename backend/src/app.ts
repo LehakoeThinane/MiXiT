@@ -1,49 +1,68 @@
 import cors from '@fastify/cors';
+import formbody from '@fastify/formbody';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
 
 import authRoutes from './modules/auth/routes.js';
 import matchingRoutes from './modules/matching/routes.js';
 import messagingRoutes from './modules/messaging/routes.js';
+import moderationRoutes from './modules/moderation/routes.js';
 import paymentRoutes from './modules/payments/routes.js';
 import profileRoutes from './modules/profiles/routes.js';
 import roomsRoutes from './modules/rooms/routes.js';
-import { redis } from './shared/cache/redis.js';
-import { authenticateSupabaseToken, resolveBearerToken } from './shared/auth/supabase-auth.js';
+import type { RateLimitPluginOptions } from '@fastify/rate-limit';
+import { extractBearerToken, verifyAccessToken } from './shared/auth/jwt.js';
 import { env } from './shared/config/env.js';
+import { redis } from './shared/cache/redis.js';
 import { prisma } from './shared/db/prisma.js';
 import { requestIdMiddleware } from './shared/middleware/request-id.js';
-import { initSocketServer } from './shared/realtime/socket.js';
+import { initSocketServer, closeSocketServer } from './shared/realtime/socket.js';
 
 export function buildApp() {
   const app = Fastify({
     logger: {
       level: env.nodeEnv === 'production' ? 'info' : 'debug',
     },
-    bodyLimit: 15 * 1024 * 1024, // 15 MB — needed for base64 profile photos
+    bodyLimit: 1 * 1024 * 1024, // 1 MB — photos upload directly to Supabase Storage
     requestTimeout: 30_000,
   });
 
   app.register(helmet);
   app.register(cors, { origin: env.corsOrigin });
+  app.register(formbody); // PayFast's ITN webhook posts application/x-www-form-urlencoded
+  app.register(rateLimit, {
+    global: true,
+    max: 200,
+    timeWindow: 60_000,
+    errorResponseBuilder: (_req, context) => ({
+      ok: false,
+      message: `Too many requests — try again in ${Math.ceil((context.ttl ?? 60_000) / 1000)}s.`,
+    }),
+  } satisfies RateLimitPluginOptions);
 
   app.addHook('onRequest', requestIdMiddleware);
   app.decorate('authenticate', async (request, reply) => {
-    const token = resolveBearerToken(request.headers.authorization);
+    const token = extractBearerToken(request.headers.authorization);
     if (!token) {
       reply.code(401).send({ ok: false, message: 'Unauthorized' });
       return;
     }
 
     try {
-      request.user = await authenticateSupabaseToken(token);
+      request.user = verifyAccessToken(token);
     } catch {
       reply.code(401).send({ ok: false, message: 'Unauthorized' });
       return;
     }
   });
 
-  app.get('/health', async () => {
+  app.get('/health', async (_req, reply) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+    } catch {
+      return reply.code(503).send({ ok: false, service: 'MiXiT API', db: 'unreachable' });
+    }
     return {
       ok: true,
       service: 'MiXiT API',
@@ -58,12 +77,13 @@ export function buildApp() {
   app.register(messagingRoutes, { prefix: '/messaging' });
   app.register(roomsRoutes, { prefix: '/rooms' });
   app.register(paymentRoutes, { prefix: '/payments' });
-  app.register((instance, _opts, done) => {
-    initSocketServer(instance);
-    done();
+  app.register(moderationRoutes, { prefix: '/moderation' });
+  app.register(async (instance) => {
+    await initSocketServer(instance);
   });
 
   app.addHook('onClose', async () => {
+    await closeSocketServer();
     await prisma.$disconnect().catch(() => {});
     if (redis.status !== 'end' && redis.status !== 'wait') {
       await redis.quit().catch(() => {});

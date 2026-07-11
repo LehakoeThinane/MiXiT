@@ -1,11 +1,13 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { getProfileCache, invalidateProfileCache, setProfileCache } from '../../shared/cache/profile-cache.js';
+import { createSignedUploadUrl } from '../../shared/storage/supabase-storage.js';
 
 type UpsertProfileBody = {
   displayName: string;
   age: number;
-  gender: 'male' | 'female' | 'homesexual';
+  gender: 'male' | 'female' | 'other';
   bio?: string;
   city?: string;
   locationLat?: number;
@@ -27,7 +29,7 @@ const profileSchema = {
     properties: {
       displayName: { type: 'string', minLength: 2, maxLength: 30 },
       age: { type: 'integer', minimum: 18, maximum: 99 },
-      gender: { type: 'string', enum: ['male', 'female', 'homesexual'] },
+      gender: { type: 'string', enum: ['male', 'female', 'other'] },
       bio: { type: 'string', maxLength: 300 },
       city: { type: 'string', maxLength: 120 },
       locationLat: { type: 'number', minimum: -90, maximum: 90 },
@@ -50,7 +52,7 @@ const profileSchema = {
       },
       photos: {
         type: 'array',
-        items: { type: 'string', minLength: 6, maxLength: 3000000 },
+        items: { type: 'string', minLength: 6, maxLength: 500 },
         maxItems: 3,
       },
       showPhone: { type: 'boolean' },
@@ -63,6 +65,9 @@ const profileSchema = {
 
 const profileRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/me', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    const cached = await getProfileCache(req.user.sub);
+    if (cached) return cached;
+
     const [profile, roomsParticipated, user] = await Promise.all([
       prisma.profile.findUnique({
         where: { userId: req.user.sub },
@@ -80,7 +85,7 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
       return reply.code(404).send({ ok: false, message: 'Profile not found' });
     }
 
-    return {
+    const result = {
       ok: true,
       profile,
       stats: {
@@ -88,6 +93,8 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
         roomsParticipated,
       },
     };
+    await setProfileCache(req.user.sub, result);
+    return result;
   });
 
   fastify.put<{ Body: UpsertProfileBody }>(
@@ -157,6 +164,8 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
         }),
       ]);
 
+      await invalidateProfileCache(req.user.sub);
+
       return {
         ok: true,
         profile,
@@ -165,6 +174,97 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
           roomsParticipated,
         },
       };
+    }
+  );
+  fastify.get<{ Params: { userId: string } }>(
+    '/:userId',
+    { preHandler: [fastify.authenticate] },
+    async (req, reply) => {
+      const { userId } = req.params;
+      const profile = await prisma.profile.findUnique({
+        where: { userId },
+        select: {
+          userId: true,
+          displayName: true,
+          age: true,
+          gender: true,
+          bio: true,
+          city: true,
+          interests: true,
+          intents: true,
+          traits: true,
+          photos: true,
+          voiceIntroUrl: true,
+          voiceIntroDurationSec: true,
+          lastActive: true,
+          completedAt: true,
+        },
+      });
+
+      if (!profile) {
+        return reply.code(404).send({ ok: false, message: 'Profile not found' });
+      }
+
+      return { ok: true, profile };
+    }
+  );
+
+  fastify.put(
+    '/me/push-token',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        body: {
+          type: 'object',
+          required: ['token'],
+          properties: {
+            token: { type: 'string', minLength: 1, maxLength: 200 },
+          },
+        },
+      },
+    },
+    async (req) => {
+      const { token } = req.body as { token: string };
+      await prisma.profile.updateMany({
+        where: { userId: req.user.sub },
+        data: { pushToken: token },
+      });
+      return { ok: true };
+    }
+  );
+
+  fastify.post(
+    '/me/photo',
+    {
+      preHandler: [fastify.authenticate],
+      config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+      schema: {
+        body: {
+          type: 'object',
+          required: ['filename', 'mimeType'],
+          properties: {
+            filename: { type: 'string', minLength: 1, maxLength: 255 },
+            mimeType: { type: 'string', enum: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'] },
+            size: { type: 'integer', minimum: 1, maximum: 5242880 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const raw = (req.body as { filename: string; mimeType: string; size?: number });
+      const filename = raw.filename;
+      // Normalise common browser/Android aliases to canonical MIME types
+      const mimeMap: Record<string, string> = { 'image/jpg': 'image/jpeg', 'image/jfif': 'image/jpeg' };
+      const mimeType = mimeMap[raw.mimeType] ?? raw.mimeType;
+
+      try {
+        const { signedUrl, publicUrl } = await createSignedUploadUrl(req.user.sub, filename);
+        return { ok: true, signedUrl, publicUrl };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to prepare photo upload';
+        req.log.error({ err: error }, 'Photo upload route failed');
+        return reply.code(500).send({ ok: false, message });
+      }
     }
   );
 };

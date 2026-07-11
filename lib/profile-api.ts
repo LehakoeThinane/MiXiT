@@ -5,7 +5,7 @@ export type Profile = {
   userId: string;
   displayName: string;
   age: number;
-  gender: 'male' | 'female' | 'homesexual';
+  gender: 'male' | 'female' | 'other';
   bio?: string | null;
   city?: string | null;
   locationLat?: number | null;
@@ -48,10 +48,67 @@ export async function getMyProfile() {
   }
 }
 
+type PhotoUploadUrlResponse = {
+  ok: boolean;
+  signedUrl: string;
+  publicUrl: string;
+};
+
+export async function requestPhotoUploadUrl(filename: string, mimeType: string): Promise<PhotoUploadUrlResponse> {
+  return apiRequest<PhotoUploadUrlResponse>('/profiles/me/photo', {
+    method: 'POST',
+    auth: true,
+    body: { filename, mimeType },
+  });
+}
+
+export async function uploadPhotoToStorage(signedUrl: string, fileUri: string, mimeType: string): Promise<void> {
+  // React Native's fetch returns status 0 for local file:// URIs — skip the ok check
+  const fileResponse = await fetch(fileUri);
+  const blob = await fileResponse.blob();
+
+  const upload = await fetch(signedUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': mimeType },
+    body: blob,
+  });
+
+  if (!upload.ok) {
+    const text = await upload.text().catch(() => '');
+    throw new Error(`Storage upload failed: ${upload.status} ${text}`);
+  }
+}
+
+export type PeerProfile = {
+  userId: string;
+  displayName: string;
+  age: number;
+  gender: 'male' | 'female' | 'other';
+  bio?: string | null;
+  city?: string | null;
+  interests?: string[] | null;
+  intents?: string[] | null;
+  traits?: string[] | null;
+  photos?: string[] | null;
+  voiceIntroUrl?: string | null;
+  voiceIntroDurationSec?: number | null;
+  lastActive?: string | null;
+};
+
+export async function getPeerProfile(userId: string): Promise<PeerProfile | null> {
+  try {
+    const response = await apiRequest<{ ok: boolean; profile: PeerProfile }>(`/profiles/${userId}`, { auth: true });
+    return response.profile;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
 export async function upsertMyProfile(input: {
   displayName: string;
   age: number;
-  gender: 'male' | 'female' | 'homesexual';
+  gender: 'male' | 'female' | 'other';
   bio?: string;
   city?: string;
   locationLat?: number;

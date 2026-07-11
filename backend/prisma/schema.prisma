@@ -10,8 +10,8 @@ datasource db {
 
 model User {
   id             String           @id @default(uuid())
-  supabaseUserId String?          @unique @map("supabase_user_id")
   phone          String           @unique
+  passwordHash   String?          @map("password_hash")
   createdAt      DateTime         @default(now()) @map("created_at")
   profile        Profile?
   sent           Message[]        @relation("sent_messages")
@@ -19,10 +19,66 @@ model User {
   sentVibes      Vibe[]           @relation("vibe_sender")
   receivedVibes  Vibe[]           @relation("vibe_recipient")
   roomMembership RoomMembership[]
-  refreshSessions RefreshSession[]
+  roomMessages   RoomMessage[]
   purchases      UserPurchase[]
+  refreshSessions RefreshSession[]
+  blocksMade      Block[]  @relation("blocks_made")
+  blocksReceived  Block[]  @relation("blocks_received")
+  reportsMade     Report[] @relation("reports_made")
+  reportsReceived Report[] @relation("reports_received")
 
   @@map("users")
+}
+
+model Block {
+  id        String   @id @default(uuid())
+  blockerId String   @map("blocker_id")
+  blockedId String   @map("blocked_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  blocker User @relation("blocks_made", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("blocks_received", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+  @@map("blocks")
+}
+
+model Report {
+  id         String   @id @default(uuid())
+  reporterId String   @map("reporter_id")
+  reportedId String   @map("reported_id")
+  reason     String
+  details    String?
+  status     String   @default("open") // open | reviewed | dismissed
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  reporter User @relation("reports_made", fields: [reporterId], references: [id], onDelete: Cascade)
+  reported User @relation("reports_received", fields: [reportedId], references: [id], onDelete: Cascade)
+
+  @@index([reportedId])
+  @@index([status, createdAt])
+  @@map("reports")
+}
+
+model RefreshSession {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  tokenHash     String    @unique @map("token_hash")
+  userAgent     String?   @map("user_agent")
+  ipAddress     String?   @map("ip_address")
+  expiresAt     DateTime  @map("expires_at")
+  revokedAt     DateTime? @map("revoked_at")
+  replacedById  String?   @unique @map("replaced_by_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replacedBy  RefreshSession? @relation("refresh_session_replacement", fields: [replacedById], references: [id], onDelete: SetNull)
+  replacedFor RefreshSession? @relation("refresh_session_replacement")
+
+  @@index([userId, revokedAt, expiresAt])
+  @@map("refresh_sessions")
 }
 
 model Profile {
@@ -46,9 +102,13 @@ model Profile {
   completedAt DateTime? @map("completed_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
   lastActive  DateTime? @map("last_active")
+  pushToken   String?  @map("push_token")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([completedAt, updatedAt(sort: Desc)])
+  @@index([city, completedAt, updatedAt(sort: Desc)])
+  @@index([lastActive(sort: Desc)])
   @@map("profiles")
 }
 
@@ -66,6 +126,7 @@ model Message {
   recipient User @relation("received_messages", fields: [recipientId], references: [id], onDelete: Cascade)
 
   @@index([senderId, recipientId, createdAt(sort: Desc)])
+  @@index([recipientId, createdAt(sort: Desc)])
   @@map("messages")
 }
 
@@ -80,7 +141,8 @@ model Vibe {
   toUser   User @relation("vibe_recipient", fields: [toUserId], references: [id], onDelete: Cascade)
 
   @@unique([fromUserId, toUserId])
-  @@index([toUserId, createdAt(sort: Desc)])
+  @@index([toUserId, matchedAt(sort: Desc), createdAt(sort: Desc)])
+  @@index([fromUserId, matchedAt])
   @@map("vibes")
 }
 
@@ -94,8 +156,23 @@ model Room {
   createdAt   DateTime         @default(now()) @map("created_at")
   updatedAt   DateTime         @updatedAt @map("updated_at")
   memberships RoomMembership[]
+  messages    RoomMessage[]
 
   @@map("rooms")
+}
+
+model RoomMessage {
+  id        String   @id @default(uuid())
+  roomId    String   @map("room_id")
+  userId    String   @map("user_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, createdAt(sort: Desc)])
+  @@map("room_messages")
 }
 
 model RoomMembership {
@@ -110,26 +187,6 @@ model RoomMembership {
   @@unique([roomId, userId])
   @@index([userId, createdAt(sort: Desc)])
   @@map("room_memberships")
-}
-
-model RefreshSession {
-  id              String   @id @default(uuid())
-  userId          String   @map("user_id")
-  tokenHash       String   @unique @map("token_hash")
-  userAgent       String?  @map("user_agent")
-  ipAddress       String?  @map("ip_address")
-  expiresAt       DateTime @map("expires_at")
-  revokedAt       DateTime? @map("revoked_at")
-  replacedById    String?  @map("replaced_by_id")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
-
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  replacedBy      RefreshSession? @relation("refresh_replacement", fields: [replacedById], references: [id], onDelete: SetNull)
-  replacedSessions RefreshSession[] @relation("refresh_replacement")
-
-  @@index([userId, revokedAt, expiresAt])
-  @@map("refresh_sessions")
 }
 
 model Product {
@@ -150,14 +207,18 @@ model Product {
 }
 
 model UserPurchase {
-  id          String    @id @default(uuid())
-  userId      String    @map("user_id")
-  productId   String    @map("product_id")
-  status      String    @default("active") // active | expired | cancelled
-  expiresAt   DateTime? @map("expires_at")
-  cancelledAt DateTime? @map("cancelled_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  id                String    @id @default(uuid())
+  userId            String    @map("user_id")
+  productId         String    @map("product_id")
+  status            String    @default("pending") // pending | active | failed | expired | cancelled
+  merchantReference String    @unique @map("merchant_reference")
+  gatewayPaymentId  String?   @unique @map("gateway_payment_id")
+  amountInCents     Int       @map("amount_in_cents")
+  currency          String    @default("ZAR")
+  expiresAt         DateTime? @map("expires_at")
+  cancelledAt       DateTime? @map("cancelled_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)

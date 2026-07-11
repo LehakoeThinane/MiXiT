@@ -21,11 +21,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, API_BASE_URL } from '@/lib/api-client';
-import { getCurrentUser, requestOtp, verifyOtp } from '@/lib/auth-api';
-import { getMyProfile, upsertMyProfile } from '@/lib/profile-api';
+import { getCurrentUser, login, register } from '@/lib/auth-api';
+import { getMyProfile, requestPhotoUploadUrl, uploadPhotoToStorage, upsertMyProfile } from '@/lib/profile-api';
 import { useAuthStore } from '@/stores/auth-store';
 
-type Gender = 'male' | 'female' | 'homesexual';
+type Gender = 'male' | 'female' | 'other';
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 const NAME_SUGGESTIONS = ['Lerato', 'Thandi', 'Lehakoe', 'Anele', 'Kagiso'];
@@ -118,21 +118,6 @@ function Progress({ step }: { step: Step }) {
   );
 }
 
-function OtpBoxes({ code, verified }: { code: string; verified: boolean }) {
-  return (
-    <View style={styles.otpRow}>
-      {Array.from({ length: 6 }).map((_, i) => {
-        const char = code[i] ?? '';
-        return (
-          <View key={i} style={[styles.otpBox, verified && styles.otpBoxVerified]}>
-            <Text style={styles.otpChar}>{char}</Text>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
 export default function ProfileTabScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -152,9 +137,8 @@ export default function ProfileTabScreen() {
 
   const [step, setStep] = useState<Step>(1);
   const [phone, setPhone] = useState('');
-  const [otpCode, setOtpCode] = useState('');
-  const [otpVerified, setOtpVerified] = useState(false);
-  const [lastDebugCode, setLastDebugCode] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
 
   const [displayName, setDisplayName] = useState('');
   const [age, setAge] = useState(24);
@@ -164,8 +148,10 @@ export default function ProfileTabScreen() {
   const [selectedIntents, setSelectedIntents] = useState<string[]>([]);
   const [traitsText, setTraitsText] = useState('');
   const [selectedPhotos, setSelectedPhotos] = useState<string[]>([]);
+  const [cityInput, setCityInput] = useState('');
   const [showPhone, setShowPhone] = useState(true);
   const [showLastSeen, setShowLastSeen] = useState(true);
+  const [uploadingPhotoIndex, setUploadingPhotoIndex] = useState<number | null>(null);
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -277,39 +263,25 @@ export default function ProfileTabScreen() {
 
   useEffect(() => {
     if (!profileQuery.data) return;
+    if (isEditingProfile) return;
 
     const profile = profileQuery.data;
     setDisplayName(profile.displayName ?? '');
     setAge(profile.age ?? 24);
     setGender((profile.gender as Gender) ?? 'female');
     setBioInput(profile.bio ?? '');
+    setCityInput(profile.city ?? '');
     setSelectedVibes(parseInterests(profile));
     setSelectedIntents(parseStringList(profile.intents).slice(0, 4));
     setTraitsText(parseStringList(profile.traits).join('\n'));
     setSelectedPhotos(parseStringList(profile.photos).slice(0, 3));
     setShowPhone(profile.showPhone ?? true);
     setShowLastSeen(profile.showLastSeen ?? true);
-  }, [profileQuery.data]);
+  }, [profileQuery.data, isEditingProfile]);
 
-  const requestOtpMutation = useMutation({
-    mutationFn: (inputPhone: string) => requestOtp(inputPhone),
-    onSuccess: (payload) => {
-      setStepError(null);
-      setStep(2);
-      setOtpCode('');
-      setOtpVerified(false);
-      setLastDebugCode(payload.debugCode ?? null);
-    },
-    onError: (error) => {
-      const message = resolveErrorMessage(error);
-      setStepError(message);
-      Alert.alert('Request OTP failed', message);
-    },
-  });
-
-  const verifyOtpMutation = useMutation({
-    mutationFn: ({ inputPhone, code }: { inputPhone: string; code: string }) =>
-      verifyOtp(inputPhone, code),
+  const authMutation = useMutation({
+    mutationFn: ({ inputPhone, inputPassword, mode }: { inputPhone: string; inputPassword: string; mode: 'login' | 'register' }) =>
+      mode === 'register' ? register(inputPhone, inputPassword) : login(inputPhone, inputPassword),
     onSuccess: async (payload) => {
       setStepError(null);
       setSession({
@@ -317,30 +289,24 @@ export default function ProfileTabScreen() {
         accessToken: payload.tokens.accessToken,
         refreshToken: payload.tokens.refreshToken,
       });
-      setOtpVerified(true);
-      setTimeout(() => setStep(3), 280);
+      setStep(3);
       await queryClient.invalidateQueries({ queryKey: ['profile', payload.user.id] });
     },
     onError: (error) => {
-      setOtpVerified(false);
       const message = resolveErrorMessage(error);
       setStepError(message);
-      Alert.alert('Verify OTP failed', message);
+      Alert.alert('Sign in failed', message);
     },
   });
 
-  useEffect(() => {
-    if (step !== 2 || otpCode.length !== 6 || verifyOtpMutation.isPending) return;
-    verifyOtpMutation.mutate({ inputPhone: phone, code: otpCode });
-  }, [otpCode, phone, step, verifyOtpMutation]);
-
   const saveProfileMutation = useMutation({
-    mutationFn: async () =>
+    mutationFn: async (fromEditProfile: boolean) =>
       upsertMyProfile({
         displayName: displayName.trim(),
         age,
         gender,
         bio: bioInput.trim(),
+        city: cityInput.trim() || undefined,
         interests: selectedVibes,
         intents: selectedIntents,
         traits: traitsText
@@ -352,12 +318,15 @@ export default function ProfileTabScreen() {
         showPhone,
         showLastSeen,
       }),
-    onSuccess: async () => {
+    onSuccess: async (_data, fromEditProfile) => {
       setStepError(null);
       await queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
-      setIsEditingProfile(false);
-      setShowCompletionStep(true);
-      setStep(7);
+      if (fromEditProfile) {
+        setIsEditingProfile(false);
+      } else {
+        setShowCompletionStep(true);
+        setStep(7);
+      }
     },
     onError: (error) => {
       const message = resolveErrorMessage(error);
@@ -370,6 +339,21 @@ export default function ProfileTabScreen() {
   const canProceedStep5 = selectedVibes.length >= 3;
   const canSaveProfile = displayName.trim().length >= 2 && selectedVibes.length >= 3;
   const hasExistingProfile = Boolean(profileQuery.data);
+
+  const profileCompleteness = useMemo(() => {
+    const p = profileQuery.data;
+    if (!p) return 0;
+    const checks = [
+      Boolean(p.displayName),
+      Boolean(p.bio?.trim()),
+      Boolean(p.city?.trim()),
+      ((p.photos as string[] | null) ?? []).length > 0,
+      ((p.interests as string[] | null) ?? []).length > 0,
+      ((p.intents as string[] | null) ?? []).length > 0,
+      Boolean(p.voiceIntroUrl),
+    ];
+    return Math.round((checks.filter(Boolean).length / checks.length) * 100);
+  }, [profileQuery.data]);
   const shouldShowProfileHome = isAuthenticated && hasExistingProfile && !showCompletionStep;
   const primaryPhoto = selectedPhotos[0] ?? null;
   const mediaItems = [0, 1, 2].map((index) => selectedPhotos[index] ?? null);
@@ -403,6 +387,8 @@ export default function ProfileTabScreen() {
   };
 
   const pickPhotoAt = async (index: number) => {
+    if (uploadingPhotoIndex !== null) return;
+
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Permission needed', 'Allow photo access to add profile images.');
@@ -410,71 +396,59 @@ export default function ProfileTabScreen() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.6,
-      base64: true,
+      quality: 0.8,
+      base64: false,
     });
 
     if (result.canceled || !result.assets.length) return;
 
     const asset = result.assets[0];
-    const encoded =
-      asset.base64 && asset.mimeType
-        ? `data:${asset.mimeType};base64,${asset.base64}`
-        : asset.base64
-        ? `data:image/jpeg;base64,${asset.base64}`
-        : asset.uri;
+    // Normalise Android aliases before sending to the backend
+    const rawMime = asset.mimeType ?? 'image/jpeg';
+    const mimeType = rawMime === 'image/jpg' ? 'image/jpeg' : rawMime;
+    const ext = mimeType.split('/')[1] ?? 'jpg';
+    const filename = asset.fileName ?? `photo-${Date.now()}.${ext}`;
 
-    setSelectedPhotos((prev) => {
-      const next = [...prev];
-      next[index] = encoded;
-      return next.slice(0, 3);
-    });
+    setUploadingPhotoIndex(index);
+    try {
+      const { signedUrl, publicUrl } = await requestPhotoUploadUrl(filename, mimeType);
+      await uploadPhotoToStorage(signedUrl, asset.uri, mimeType);
+      setSelectedPhotos((prev) => {
+        const next = [...prev];
+        next[index] = publicUrl;
+        return next.slice(0, 3);
+      });
+    } catch {
+      Alert.alert('Upload failed', 'Could not upload photo. Please try again.');
+    } finally {
+      setUploadingPhotoIndex(null);
+    }
   };
 
   const removePhotoAt = (index: number) => {
     setSelectedPhotos((prev) => prev.filter((_, position) => position !== index));
   };
 
-  const runResendAutofill = async () => {
-    if (requestOtpMutation.isPending) return;
-    try {
-      const payload = await requestOtpMutation.mutateAsync(phone);
-      const target = payload.debugCode ?? lastDebugCode ?? String(Math.floor(100000 + Math.random() * 900000));
-      setOtpCode('');
-      setOtpVerified(false);
-      setStepError(null);
-
-      for (let i = 1; i <= 6; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 120));
-        setOtpCode(target.slice(0, i));
-      }
-    } catch {
-      // handled by mutation onError
-    }
-  };
-
-  const applyDebugCode = () => {
-    if (!lastDebugCode) return;
-    setOtpCode(lastDebugCode);
-    setOtpVerified(false);
-    setStepError(null);
-  };
-
   const handleLogout = () => {
     clearSession();
     setStep(1);
     setPhone('');
-    setOtpCode('');
-    setOtpVerified(false);
+    setPassword('');
+    setDisplayName('');
+    setAge(24);
+    setGender('female');
     setBioInput('');
+    setSelectedVibes([]);
     setSelectedIntents([]);
     setTraitsText('');
     setSelectedPhotos([]);
     setShowPhone(true);
     setShowLastSeen(true);
+    setIsRecording(false);
+    setRecordSeconds(0);
     setStepError(null);
     setShowCompletionStep(false);
     setIsEditingProfile(false);
@@ -520,9 +494,7 @@ export default function ProfileTabScreen() {
   const stepTitle = useMemo(() => {
     switch (step) {
       case 1:
-        return 'Phone number';
-      case 2:
-        return 'OTP';
+        return authMode === 'register' ? 'Create account' : 'Sign in';
       case 3:
         return 'Your name';
       case 4:
@@ -619,7 +591,7 @@ export default function ProfileTabScreen() {
         {liquidBackdrop}
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 78 : 0}>
           <ScrollView
             contentContainerStyle={styles.profileContent}
@@ -662,6 +634,30 @@ export default function ProfileTabScreen() {
               </View>
             </View>
 
+            {profileCompleteness < 100 ? (
+              <View style={styles.completenessCard}>
+                <View style={styles.completenessHeader}>
+                  <Text style={styles.completenessTitle}>Profile {profileCompleteness}% complete</Text>
+                  <Text style={styles.completenessHint}>Complete profiles get 3× more vibes</Text>
+                </View>
+                <View style={styles.completenessBarBg}>
+                  <View style={[styles.completenessBarFill, { width: `${profileCompleteness}%` as `${number}%` }]} />
+                </View>
+                <Text style={styles.completenessAction}>
+                  {profileCompleteness < 40
+                    ? 'Add a bio and city to get started'
+                    : profileCompleteness < 70
+                    ? 'Add photos and interests to stand out'
+                    : 'Add a voice intro to unlock your full profile'}
+                </Text>
+              </View>
+            ) : null}
+
+            <Pressable style={styles.premiumCard} onPress={() => router.push('/premium')}>
+              <Text style={styles.premiumCardTitle}>MiXiT Premium</Text>
+              <Text style={styles.premiumCardBody}>Unlimited vibes, priority in Discover, and more.</Text>
+            </Pressable>
+
             {isEditingProfile ? (
               <View style={styles.stepBlock}>
                 <Text style={styles.label}>Display Name</Text>
@@ -687,7 +683,7 @@ export default function ProfileTabScreen() {
 
                 <Text style={styles.label}>Gender</Text>
                 <View style={styles.genderRow}>
-                  {(['male', 'female', 'homesexual'] as Gender[]).map((option) => {
+                  {(['male', 'female', 'other'] as Gender[]).map((option) => {
                     const active = gender === option;
                     return (
                       <Pressable
@@ -708,6 +704,15 @@ export default function ProfileTabScreen() {
                   placeholderTextColor="#8d90a6"
                   multiline
                   style={[styles.input, styles.bioInput]}
+                />
+
+                <Text style={styles.label}>City</Text>
+                <TextInput
+                  value={cityInput}
+                  onChangeText={setCityInput}
+                  placeholder="Your city"
+                  placeholderTextColor="#8d90a6"
+                  style={styles.input}
                 />
 
                 <Text style={styles.label}>Looking for</Text>
@@ -755,14 +760,19 @@ export default function ProfileTabScreen() {
                 <View style={styles.mediaRow}>
                   {mediaItems.map((uri, index) => (
                     <View key={`${uri ?? 'slot-edit'}-${index}`} style={styles.mediaEditorCell}>
-                      <Pressable style={styles.mediaTile} onPress={() => pickPhotoAt(index)}>
-                        {uri ? (
+                      <Pressable
+                        style={styles.mediaTile}
+                        onPress={() => pickPhotoAt(index)}
+                        disabled={uploadingPhotoIndex !== null}>
+                        {uploadingPhotoIndex === index ? (
+                          <ActivityIndicator color="#ff6b35" />
+                        ) : uri ? (
                           <Image source={{ uri }} style={styles.mediaImage} contentFit="cover" />
                         ) : (
                           <Text style={styles.mediaPlaceholder}>Add photo</Text>
                         )}
                       </Pressable>
-                      {uri ? (
+                      {uri && uploadingPhotoIndex !== index ? (
                         <Pressable style={styles.mediaAction} onPress={() => removePhotoAt(index)}>
                           <Text style={styles.mediaActionText}>Remove</Text>
                         </Pressable>
@@ -790,7 +800,7 @@ export default function ProfileTabScreen() {
                 <Pressable
                   style={[styles.button, (!canSaveProfile || saveProfileMutation.isPending) && styles.buttonDisabled]}
                   disabled={!canSaveProfile || saveProfileMutation.isPending}
-                  onPress={() => saveProfileMutation.mutate()}>
+                  onPress={() => saveProfileMutation.mutate(true)}>
                   <Text style={styles.buttonText}>
                     {saveProfileMutation.isPending ? 'Saving...' : 'Save profile'}
                   </Text>
@@ -805,6 +815,7 @@ export default function ProfileTabScreen() {
                       setAge(currentProfile.age ?? 24);
                       setGender((currentProfile.gender as Gender) ?? 'female');
                       setBioInput(currentProfile.bio ?? '');
+                      setCityInput(currentProfile.city ?? '');
                       setSelectedVibes(parseInterests(currentProfile));
                       setSelectedIntents(parseStringList(currentProfile.intents).slice(0, 4));
                       setTraitsText(parseStringList(currentProfile.traits).join('\n'));
@@ -951,6 +962,18 @@ export default function ProfileTabScreen() {
           <Animated.View style={{ transform: [{ translateX: slide }] }}>
             {step === 1 && (
               <View style={styles.stepBlock}>
+                <View style={styles.authModeRow}>
+                  <Pressable
+                    style={[styles.authModeTab, authMode === 'login' && styles.authModeTabActive]}
+                    onPress={() => { setAuthMode('login'); setStepError(null); }}>
+                    <Text style={[styles.authModeText, authMode === 'login' && styles.authModeTextActive]}>Sign in</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.authModeTab, authMode === 'register' && styles.authModeTabActive]}
+                    onPress={() => { setAuthMode('register'); setStepError(null); }}>
+                    <Text style={[styles.authModeText, authMode === 'register' && styles.authModeTextActive]}>Create account</Text>
+                  </Pressable>
+                </View>
                 <Text style={styles.label}>Phone Number</Text>
                 <TextInput
                   autoFocus
@@ -961,41 +984,25 @@ export default function ProfileTabScreen() {
                   style={styles.input}
                   keyboardType="phone-pad"
                 />
+                <Text style={styles.label}>Password</Text>
+                <TextInput
+                  value={password}
+                  onChangeText={setPassword}
+                  placeholder="Min 6 characters"
+                  placeholderTextColor="#8d90a6"
+                  style={styles.input}
+                  secureTextEntry
+                />
                 <Pressable
-                  style={[styles.button, requestOtpMutation.isPending && styles.buttonDisabled]}
-                  disabled={requestOtpMutation.isPending || phone.trim().length < 8}
-                  onPress={() => requestOtpMutation.mutate(phone)}>
+                  style={[styles.button, authMutation.isPending && styles.buttonDisabled]}
+                  disabled={authMutation.isPending || phone.trim().length < 8 || password.length < 6}
+                  onPress={() => authMutation.mutate({ inputPhone: phone, inputPassword: password, mode: authMode })}>
                   <Text style={styles.buttonText}>
-                    {requestOtpMutation.isPending ? 'Sending...' : 'Send code'}
+                    {authMutation.isPending
+                      ? authMode === 'register' ? 'Creating...' : 'Signing in...'
+                      : authMode === 'register' ? 'Create account' : 'Sign in'}
                   </Text>
                 </Pressable>
-              </View>
-            )}
-
-            {step === 2 && (
-              <View style={styles.stepBlock}>
-                <Text style={styles.label}>OTP Code</Text>
-                <OtpBoxes code={otpCode} verified={otpVerified} />
-                <TextInput
-                  value={otpCode}
-                  onChangeText={(v) => setOtpCode(v.replace(/\D/g, '').slice(0, 6))}
-                  keyboardType="number-pad"
-                  style={styles.hiddenOtpInput}
-                  autoFocus
-                  maxLength={6}
-                />
-                <Pressable onPress={runResendAutofill} disabled={requestOtpMutation.isPending}>
-                  <Text style={styles.link}>Resend code</Text>
-                </Pressable>
-                {lastDebugCode ? (
-                  <View style={styles.devOtpCard}>
-                    <Text style={styles.devOtpLabel}>Test mode OTP</Text>
-                    <Text style={styles.devOtpCode}>{lastDebugCode}</Text>
-                    <Pressable onPress={applyDebugCode}>
-                      <Text style={styles.devOtpAction}>Use this code</Text>
-                    </Pressable>
-                  </View>
-                ) : null}
               </View>
             )}
 
@@ -1030,7 +1037,7 @@ export default function ProfileTabScreen() {
               <View style={styles.stepBlock}>
                 <Text style={styles.label}>Gender</Text>
                 <View style={styles.genderRow}>
-                  {(['male', 'female', 'homesexual'] as Gender[]).map((option) => {
+                  {(['male', 'female', 'other'] as Gender[]).map((option) => {
                     const active = gender === option;
                     return (
                       <Pressable
@@ -1054,6 +1061,35 @@ export default function ProfileTabScreen() {
                   thumbTintColor="#ff6b35"
                   onValueChange={(value) => setAge(value)}
                 />
+
+                <Text style={styles.label}>Photos (optional — add up to 3)</Text>
+                <View style={styles.mediaRow}>
+                  {[0, 1, 2].map((index) => {
+                    const uri = selectedPhotos[index] ?? null;
+                    return (
+                      <View key={`setup-photo-${index}`} style={styles.mediaEditorCell}>
+                        <Pressable
+                          style={styles.mediaTile}
+                          onPress={() => pickPhotoAt(index)}
+                          disabled={uploadingPhotoIndex !== null}>
+                          {uploadingPhotoIndex === index ? (
+                            <ActivityIndicator color="#ff6b35" />
+                          ) : uri ? (
+                            <Image source={{ uri }} style={styles.mediaImage} contentFit="cover" />
+                          ) : (
+                            <Text style={styles.mediaPlaceholder}>+</Text>
+                          )}
+                        </Pressable>
+                        {uri && uploadingPhotoIndex !== index ? (
+                          <Pressable style={styles.mediaAction} onPress={() => removePhotoAt(index)}>
+                            <Text style={styles.mediaActionText}>Remove</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                </View>
+
                 <Pressable style={styles.button} onPress={() => setStep(5)}>
                   <Text style={styles.buttonText}>Next</Text>
                 </Pressable>
@@ -1108,7 +1144,7 @@ export default function ProfileTabScreen() {
                 <Pressable
                   style={[styles.button, (!hasVoiceClip || saveProfileMutation.isPending) && styles.buttonDisabled]}
                   disabled={!hasVoiceClip || saveProfileMutation.isPending}
-                  onPress={() => saveProfileMutation.mutate()}>
+                  onPress={() => saveProfileMutation.mutate(false)}>
                   <Text style={styles.buttonText}>
                     {saveProfileMutation.isPending ? 'Finishing...' : 'Finish setup'}
                   </Text>
@@ -1508,6 +1544,61 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 13,
   },
+  completenessCard: {
+    backgroundColor: 'rgba(255,107,53,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,107,53,0.3)',
+    borderRadius: 16,
+    padding: 14,
+    gap: 8,
+    marginBottom: 4,
+  },
+  premiumCard: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 16,
+    padding: 14,
+    gap: 4,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  premiumCardTitle: {
+    color: '#ffb08f',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  premiumCardBody: {
+    color: '#c6cbe2',
+    fontSize: 13,
+  },
+  completenessHeader: {
+    gap: 2,
+  },
+  completenessTitle: {
+    color: '#f4f6ff',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  completenessHint: {
+    color: '#ff9f72',
+    fontSize: 13,
+  },
+  completenessBarBg: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+  },
+  completenessBarFill: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#ff6b35',
+  },
+  completenessAction: {
+    color: '#c8cfe9',
+    fontSize: 13,
+  },
   mediaAction: {
     borderRadius: 10,
     borderWidth: 1,
@@ -1573,41 +1664,29 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 18,
   },
-  link: {
-    color: '#d5dbff',
-    marginTop: 8,
-    textDecorationLine: 'underline',
-    fontSize: 16,
-  },
-  otpRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  otpBox: {
-    flex: 1,
-    height: 56,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.22)',
-    alignItems: 'center',
-    justifyContent: 'center',
+  authModeRow: {
+    flexDirection: 'row' as const,
     backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 18,
   },
-  otpBoxVerified: {
-    borderColor: '#22c67a',
-    backgroundColor: '#163126',
+  authModeTab: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center' as const,
   },
-  otpChar: {
-    color: '#f7f8ff',
-    fontSize: 24,
-    fontWeight: '700',
+  authModeTabActive: {
+    backgroundColor: '#ff6b35',
   },
-  hiddenOtpInput: {
-    position: 'absolute',
-    opacity: 0,
-    width: 1,
-    height: 1,
+  authModeText: {
+    color: '#9ca3c4',
+    fontWeight: '600' as const,
+    fontSize: 14,
+  },
+  authModeTextActive: {
+    color: '#fff',
   },
   suggestionRow: {
     flexDirection: 'row',
@@ -1767,34 +1846,5 @@ const styles = StyleSheet.create({
     color: '#d9dcf2',
     fontWeight: '700',
     fontSize: 17,
-  },
-  devOtpCard: {
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(157,192,255,0.5)',
-    backgroundColor: 'rgba(104,140,199,0.18)',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 4,
-  },
-  devOtpLabel: {
-    color: '#9dc0ff',
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  devOtpCode: {
-    color: '#f7f8ff',
-    fontSize: 24,
-    fontWeight: '700',
-    letterSpacing: 2,
-  },
-  devOtpAction: {
-    color: '#9ca8ff',
-    fontSize: 14,
-    fontWeight: '700',
-    textDecorationLine: 'underline',
   },
 });

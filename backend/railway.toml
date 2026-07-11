@@ -1,10 +1,11 @@
 [build]
-buildCommand = "corepack enable && corepack pnpm install --frozen-lockfile && corepack pnpm run build"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "node dist/server.js"
-preDeployCommand = "node_modules/.bin/prisma migrate deploy"
+preDeployCommand = "pnpm exec prisma migrate deploy"
 healthcheckPath = "/health"
-healthcheckTimeout = 30
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 5
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

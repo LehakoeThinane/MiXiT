@@ -11,9 +11,23 @@ export type RoomItem = {
   joined: boolean;
 };
 
+export type RoomMessage = {
+  id: string;
+  roomId: string;
+  userId: string;
+  senderName: string;
+  content: string;
+  createdAt: string;
+};
+
 type RoomsResponse = {
   ok: boolean;
   rooms: RoomItem[];
+};
+
+type RoomMessagesResponse = {
+  ok: boolean;
+  messages: RoomMessage[];
 };
 
 export async function getRooms() {
@@ -27,4 +41,18 @@ export async function joinRoom(roomId: string) {
 
 export async function leaveRoom(roomId: string) {
   await apiRequest<{ ok: boolean }>(`/rooms/join/${roomId}`, { method: 'DELETE', auth: true });
+}
+
+export async function getRoomMessages(roomId: string) {
+  const response = await apiRequest<RoomMessagesResponse>(`/rooms/${roomId}/messages`, { auth: true });
+  return response.messages;
+}
+
+export async function sendRoomMessage(roomId: string, content: string) {
+  const response = await apiRequest<{ ok: boolean; message: RoomMessage }>(`/rooms/${roomId}/messages`, {
+    method: 'POST',
+    auth: true,
+    body: { content },
+  });
+  return response.message;
 }

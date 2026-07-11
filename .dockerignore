@@ -1,0 +1,29 @@
+# Git history
+.git/
+
+# All node_modules
+**/node_modules/
+
+# Compiled output (rebuilt during Docker build)
+backend/dist/
+
+# Expo / React Native app directories
+app/
+assets/
+components/
+constants/
+hooks/
+lib/
+scripts/
+.expo/
+.expo-shared/
+
+# Env files
+.env
+.env.*
+backend/.env
+backend/.env.*
+
+# IDE / OS
+.vscode/
+*.md
