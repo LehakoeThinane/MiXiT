@@ -327,7 +327,7 @@ export default function DiscoverScreen() {
         <View style={styles.modalOverlay}>
           {Boolean(matchProfile) && <Confetti />}
           <View style={styles.matchCard}>
-            <Text style={styles.matchTopText}>IT'S A MATCH</Text>
+            <Text style={styles.matchTopText}>IT&apos;S A MATCH</Text>
 
             <View style={styles.matchAvatars}>
               <View style={styles.matchAvatarPrimary}>
@@ -340,7 +340,7 @@ export default function DiscoverScreen() {
 
             <Text style={styles.matchTitle}>You and {matchProfile?.name} vibed!</Text>
             <Text style={styles.matchBody}>
-              You both showed interest. Say something warm, don't leave them waiting.
+              You both showed interest. Say something warm, don&apos;t leave them waiting.
             </Text>
 
             <Pressable

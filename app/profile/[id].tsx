@@ -95,7 +95,7 @@ export default function PeerProfileScreen() {
         </View>
       ) : profileQuery.isError ? (
         <View style={styles.center}>
-          <Text style={styles.errorText}>Couldn't load profile</Text>
+          <Text style={styles.errorText}>Couldn&apos;t load profile</Text>
           <Pressable style={styles.retryBtn} onPress={() => profileQuery.refetch()}>
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
