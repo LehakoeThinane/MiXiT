@@ -62,6 +62,7 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://mixit:mixit@localhost:5432/mixit
+      DIRECT_URL: postgresql://mixit:mixit@localhost:5432/mixit
     defaults:
       run:
         working-directory: backend
