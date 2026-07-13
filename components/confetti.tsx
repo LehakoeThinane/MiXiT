@@ -1,8 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Dimensions, StyleSheet, View } from 'react-native';
 import Animated, {
   Easing,
-  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withDelay,
@@ -38,6 +37,9 @@ function ConfettiPiece({ particle }: { particle: Particle }) {
   const opacity = useSharedValue(1);
   const rotate = useSharedValue(0);
 
+  // Intentionally run once on mount: this animates the particle in from its
+  // initial random delay/duration/rotate, and shared values are stable
+  // refs that don't need to be in the dep array.
   useEffect(() => {
     y.value = withDelay(
       particle.delay,
@@ -51,6 +53,7 @@ function ConfettiPiece({ particle }: { particle: Particle }) {
       particle.delay,
       withTiming(particle.rotate, { duration: particle.duration })
     );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const style = useAnimatedStyle(() => ({
@@ -77,13 +80,16 @@ function ConfettiPiece({ particle }: { particle: Particle }) {
 }
 
 export function Confetti({ onDone }: { onDone?: () => void }) {
-  const particles = randomParticles();
+  const particles = useMemo(() => randomParticles(), []);
   const maxDuration = Math.max(...particles.map((p) => p.delay + p.duration));
 
+  // Intentionally run once on mount to arm a single timeout for the whole
+  // burst — Confetti is mounted fresh per celebration, not re-rendered.
   useEffect(() => {
     if (!onDone) return;
     const t = setTimeout(onDone, maxDuration + 200);
     return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (

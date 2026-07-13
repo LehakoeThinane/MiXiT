@@ -6,7 +6,7 @@ import { logger } from '../utils/logger.js';
 // PayFast requires fields to be signed in this exact order — not
 // alphabetical, not the order they're posted. Getting this wrong is the
 // most common cause of "signature mismatch" errors.
-const PAYMENT_FIELD_ORDER = [
+export const PAYMENT_FIELD_ORDER = [
   'merchant_id',
   'merchant_key',
   'return_url',
@@ -61,7 +61,7 @@ const ITN_FIELD_ORDER = [
 ] as const;
 
 // PayFast expects PHP urlencode-style escaping (spaces as '+'), not %20.
-function payfastEncode(value: string): string {
+export function payfastEncode(value: string): string {
   return encodeURIComponent(value).replace(/%20/g, '+');
 }
 
@@ -75,7 +75,7 @@ function buildSignatureString(fields: Record<string, string | undefined>, order:
   return parts.join('&');
 }
 
-function generateSignature(fields: Record<string, string | undefined>, order: readonly string[]): string {
+export function generateSignature(fields: Record<string, string | undefined>, order: readonly string[]): string {
   let base = buildSignatureString(fields, order);
   if (env.payfastPassphrase) {
     base += `${base ? '&' : ''}passphrase=${payfastEncode(env.payfastPassphrase)}`;

@@ -44,7 +44,7 @@ jobs:
         run: pnpm run lint
 
   backend:
-    name: Backend (build + migrations)
+    name: Backend (tests + build + migrations)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -81,6 +81,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Unit tests
+        run: pnpm run test
 
       - name: Apply migrations to a fresh database
         run: pnpm exec prisma migrate deploy

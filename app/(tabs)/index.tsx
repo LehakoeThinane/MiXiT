@@ -508,7 +508,7 @@ export default function ProfileTabScreen() {
       default:
         return '';
     }
-  }, [step]);
+  }, [step, authMode]);
 
   const liquidBackdrop = (
     <View pointerEvents="none" style={styles.liquidBackground}>
