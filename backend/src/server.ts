@@ -1,4 +1,9 @@
+import './instrument.js';
+
+import * as Sentry from '@sentry/node';
+
 import { buildApp } from './app.js';
+import { ensureRedisConnection } from './shared/cache/redis.js';
 import { env } from './shared/config/env.js';
 import { prisma } from './shared/db/prisma.js';
 import { ensureChatMediaBucket, ensureStorageBucket } from './shared/storage/supabase-storage.js';
@@ -24,11 +29,13 @@ function maskSecret(value: string) {
 }
 
 process.on('uncaughtException', (error) => {
+  Sentry.captureException(error);
   logger.error('UNCAUGHT_EXCEPTION', { message: error.message, stack: error.stack });
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
+  Sentry.captureException(reason);
   const message = reason instanceof Error ? reason.message : String(reason);
   const stack = reason instanceof Error ? reason.stack : undefined;
   logger.error('UNHANDLED_REJECTION', { message, stack });
@@ -53,6 +60,14 @@ async function start() {
 
     await prisma.$connect();
     logger.info('Database connection established');
+
+    // Best-effort — rate limiting/caching fall back gracefully (skipOnError) if this
+    // never connects, so a Redis outage shouldn't block boot.
+    await ensureRedisConnection().catch((error: unknown) => {
+      logger.warn('Redis connection failed at boot — rate limiting/caching degraded', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
     await app.listen({ host: env.host, port: env.port });
     logger.info(`API running on http://${env.host}:${env.port}`);

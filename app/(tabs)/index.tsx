@@ -1,7 +1,9 @@
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import Slider from '@react-native-community/slider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -21,12 +23,23 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, API_BASE_URL } from '@/lib/api-client';
-import { getCurrentUser, login, register } from '@/lib/auth-api';
+import { getCurrentUser, googleSignIn, updatePhone } from '@/lib/auth-api';
 import { getMyProfile, requestPhotoUploadUrl, uploadPhotoToStorage, upsertMyProfile } from '@/lib/profile-api';
 import { useAuthStore } from '@/stores/auth-store';
 
 type Gender = 'male' | 'female' | 'other';
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? '';
+const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? '';
+const isGoogleSignInConfigured = Boolean(GOOGLE_WEB_CLIENT_ID);
+
+if (isGoogleSignInConfigured) {
+  GoogleSignin.configure({
+    webClientId: GOOGLE_WEB_CLIENT_ID,
+    iosClientId: GOOGLE_IOS_CLIENT_ID || undefined,
+  });
+}
 
 const NAME_SUGGESTIONS = ['Lerato', 'Thandi', 'Lehakoe', 'Anele', 'Kagiso'];
 const VIBE_OPTIONS = [
@@ -136,9 +149,8 @@ export default function ProfileTabScreen() {
   const hasSessionTokens = Boolean(accessToken && refreshToken);
 
   const [step, setStep] = useState<Step>(1);
-  const [phone, setPhone] = useState('');
-  const [password, setPassword] = useState('');
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [onboardingPhone, setOnboardingPhone] = useState('');
+  const [phoneSaveError, setPhoneSaveError] = useState<string | null>(null);
 
   const [displayName, setDisplayName] = useState('');
   const [age, setAge] = useState(24);
@@ -152,6 +164,8 @@ export default function ProfileTabScreen() {
   const [showPhone, setShowPhone] = useState(true);
   const [showLastSeen, setShowLastSeen] = useState(true);
   const [uploadingPhotoIndex, setUploadingPhotoIndex] = useState<number | null>(null);
+  const [locationCoords, setLocationCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const locationRequestedRef = useRef(false);
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -238,6 +252,7 @@ export default function ProfileTabScreen() {
       setSession({
         user: {
           id: sessionQuery.data.user.id,
+          email: sessionQuery.data.user.email,
           phone: sessionQuery.data.user.phone,
         },
         accessToken,
@@ -245,6 +260,12 @@ export default function ProfileTabScreen() {
       });
     }
   }, [accessToken, clearSession, refreshToken, sessionQuery.data, sessionQuery.isError, setSession]);
+
+  // Keep the phone editor in sync with the persisted value — only reacts to the
+  // phone value itself changing, so it won't clobber an in-progress edit.
+  useEffect(() => {
+    setOnboardingPhone(user?.phone ?? '');
+  }, [user?.phone]);
 
   useEffect(() => {
     if (!sessionQuery.data?.user || !hasSessionTokens || didShowSessionBannerRef.current) return;
@@ -277,11 +298,34 @@ export default function ProfileTabScreen() {
     setSelectedPhotos(parseStringList(profile.photos).slice(0, 3));
     setShowPhone(profile.showPhone ?? true);
     setShowLastSeen(profile.showLastSeen ?? true);
+    if (profile.locationLat != null && profile.locationLng != null) {
+      setLocationCoords((prev) => prev ?? { lat: profile.locationLat as number, lng: profile.locationLng as number });
+    }
   }, [profileQuery.data, isEditingProfile]);
 
-  const authMutation = useMutation({
-    mutationFn: ({ inputPhone, inputPassword, mode }: { inputPhone: string; inputPassword: string; mode: 'login' | 'register' }) =>
-      mode === 'register' ? register(inputPhone, inputPassword) : login(inputPhone, inputPassword),
+  // Request GPS once the user has an identity (step 4+) or opens edit — silently
+  // falls back to city-based distance in Discover if permission is denied.
+  useEffect(() => {
+    if (locationRequestedRef.current) return;
+    if (!isAuthenticated) return;
+    if (locationCoords) return;
+    if (step < 4 && !isEditingProfile) return;
+
+    locationRequestedRef.current = true;
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') return;
+        const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        setLocationCoords({ lat: position.coords.latitude, lng: position.coords.longitude });
+      } catch {
+        // permission denied or location services unavailable — city-based distance still works
+      }
+    })();
+  }, [step, isEditingProfile, isAuthenticated, locationCoords]);
+
+  const googleAuthMutation = useMutation({
+    mutationFn: (idToken: string) => googleSignIn(idToken),
     onSuccess: async (payload) => {
       setStepError(null);
       setSession({
@@ -299,6 +343,41 @@ export default function ProfileTabScreen() {
     },
   });
 
+  const updatePhoneMutation = useMutation({
+    mutationFn: (value: string) => updatePhone(value),
+    onSuccess: (result) => {
+      setPhoneSaveError(null);
+      if (user && accessToken && refreshToken) {
+        setSession({ user: { ...user, phone: result.phone }, accessToken, refreshToken });
+      }
+    },
+    onError: (error) => {
+      setPhoneSaveError(resolveErrorMessage(error));
+    },
+  });
+
+  const savePhoneIfChanged = () => {
+    const trimmed = onboardingPhone.trim();
+    if (trimmed && trimmed !== (user?.phone ?? '')) {
+      updatePhoneMutation.mutate(trimmed);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    try {
+      if (Platform.OS === 'android') {
+        await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+      }
+      const response = await GoogleSignin.signIn();
+      if (response.type !== 'success' || !response.data.idToken) {
+        return; // user cancelled, or no idToken returned — nothing to do
+      }
+      googleAuthMutation.mutate(response.data.idToken);
+    } catch (error) {
+      setStepError(resolveErrorMessage(error));
+    }
+  };
+
   const saveProfileMutation = useMutation({
     mutationFn: async (fromEditProfile: boolean) =>
       upsertMyProfile({
@@ -307,6 +386,8 @@ export default function ProfileTabScreen() {
         gender,
         bio: bioInput.trim(),
         city: cityInput.trim() || undefined,
+        locationLat: locationCoords?.lat,
+        locationLng: locationCoords?.lng,
         interests: selectedVibes,
         intents: selectedIntents,
         traits: traitsText
@@ -435,8 +516,8 @@ export default function ProfileTabScreen() {
   const handleLogout = () => {
     clearSession();
     setStep(1);
-    setPhone('');
-    setPassword('');
+    setOnboardingPhone('');
+    setPhoneSaveError(null);
     setDisplayName('');
     setAge(24);
     setGender('female');
@@ -452,6 +533,8 @@ export default function ProfileTabScreen() {
     setStepError(null);
     setShowCompletionStep(false);
     setIsEditingProfile(false);
+    setLocationCoords(null);
+    locationRequestedRef.current = false;
   };
 
   const stopRecording = () => {
@@ -494,7 +577,7 @@ export default function ProfileTabScreen() {
   const stepTitle = useMemo(() => {
     switch (step) {
       case 1:
-        return authMode === 'register' ? 'Create account' : 'Sign in';
+        return 'Sign in';
       case 3:
         return 'Your name';
       case 4:
@@ -508,7 +591,7 @@ export default function ProfileTabScreen() {
       default:
         return '';
     }
-  }, [step, authMode]);
+  }, [step]);
 
   const liquidBackdrop = (
     <View pointerEvents="none" style={styles.liquidBackground}>
@@ -616,7 +699,8 @@ export default function ProfileTabScreen() {
                 )}
                 <View style={styles.profileIdentityBlock}>
                   <Text style={styles.profileName}>{displayName}</Text>
-                  {showPhone ? <Text style={styles.profilePhone}>{user?.phone ?? ''}</Text> : null}
+                  {user?.email ? <Text style={styles.profilePhone}>{user.email}</Text> : null}
+                  {showPhone && user?.phone ? <Text style={styles.profilePhone}>{user.phone}</Text> : null}
                   <View style={styles.statusRow}>
                     <View style={[styles.statusDot, isActiveNow && styles.statusDotActive]} />
                     <Text style={styles.statusText}>{lastSeenLabel}</Text>
@@ -781,6 +865,17 @@ export default function ProfileTabScreen() {
                   ))}
                 </View>
 
+                <Text style={styles.label}>Phone Number</Text>
+                <TextInput
+                  value={onboardingPhone}
+                  onChangeText={setOnboardingPhone}
+                  placeholder="+27... — used for payments, shown on your profile"
+                  placeholderTextColor="#8d90a6"
+                  style={styles.input}
+                  keyboardType="phone-pad"
+                />
+                {phoneSaveError ? <Text style={styles.errorText}>{phoneSaveError}</Text> : null}
+
                 <Text style={styles.label}>Privacy</Text>
                 <View style={styles.toggleGroup}>
                   <Pressable style={[styles.pill, showPhone && styles.pillActive]} onPress={() => setShowPhone((prev) => !prev)}>
@@ -800,7 +895,10 @@ export default function ProfileTabScreen() {
                 <Pressable
                   style={[styles.button, (!canSaveProfile || saveProfileMutation.isPending) && styles.buttonDisabled]}
                   disabled={!canSaveProfile || saveProfileMutation.isPending}
-                  onPress={() => saveProfileMutation.mutate(true)}>
+                  onPress={() => {
+                    savePhoneIfChanged();
+                    saveProfileMutation.mutate(true);
+                  }}>
                   <Text style={styles.buttonText}>
                     {saveProfileMutation.isPending ? 'Saving...' : 'Save profile'}
                   </Text>
@@ -809,6 +907,8 @@ export default function ProfileTabScreen() {
                   style={[styles.button, styles.secondaryButton]}
                   onPress={() => {
                     setIsEditingProfile(false);
+                    setOnboardingPhone(user?.phone ?? '');
+                    setPhoneSaveError(null);
                     const currentProfile = profileQuery.data;
                     if (currentProfile) {
                       setDisplayName(currentProfile.displayName ?? '');
@@ -962,47 +1062,21 @@ export default function ProfileTabScreen() {
           <Animated.View style={{ transform: [{ translateX: slide }] }}>
             {step === 1 && (
               <View style={styles.stepBlock}>
-                <View style={styles.authModeRow}>
+                <Text style={styles.label}>Sign in to MiXiT</Text>
+                {isGoogleSignInConfigured ? (
                   <Pressable
-                    style={[styles.authModeTab, authMode === 'login' && styles.authModeTabActive]}
-                    onPress={() => { setAuthMode('login'); setStepError(null); }}>
-                    <Text style={[styles.authModeText, authMode === 'login' && styles.authModeTextActive]}>Sign in</Text>
+                    style={[styles.button, googleAuthMutation.isPending && styles.buttonDisabled]}
+                    disabled={googleAuthMutation.isPending}
+                    onPress={handleGoogleSignIn}>
+                    <Text style={styles.buttonText}>
+                      {googleAuthMutation.isPending ? 'Signing in...' : 'Continue with Google'}
+                    </Text>
                   </Pressable>
-                  <Pressable
-                    style={[styles.authModeTab, authMode === 'register' && styles.authModeTabActive]}
-                    onPress={() => { setAuthMode('register'); setStepError(null); }}>
-                    <Text style={[styles.authModeText, authMode === 'register' && styles.authModeTextActive]}>Create account</Text>
-                  </Pressable>
-                </View>
-                <Text style={styles.label}>Phone Number</Text>
-                <TextInput
-                  autoFocus
-                  value={phone}
-                  onChangeText={setPhone}
-                  placeholder="+27..."
-                  placeholderTextColor="#8d90a6"
-                  style={styles.input}
-                  keyboardType="phone-pad"
-                />
-                <Text style={styles.label}>Password</Text>
-                <TextInput
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="Min 6 characters"
-                  placeholderTextColor="#8d90a6"
-                  style={styles.input}
-                  secureTextEntry
-                />
-                <Pressable
-                  style={[styles.button, authMutation.isPending && styles.buttonDisabled]}
-                  disabled={authMutation.isPending || phone.trim().length < 8 || password.length < 6}
-                  onPress={() => authMutation.mutate({ inputPhone: phone, inputPassword: password, mode: authMode })}>
-                  <Text style={styles.buttonText}>
-                    {authMutation.isPending
-                      ? authMode === 'register' ? 'Creating...' : 'Signing in...'
-                      : authMode === 'register' ? 'Create account' : 'Sign in'}
+                ) : (
+                  <Text style={styles.supportText}>
+                    Google Sign-In is not configured yet. Set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID to enable it.
                   </Text>
-                </Pressable>
+                )}
               </View>
             )}
 
@@ -1024,10 +1098,25 @@ export default function ProfileTabScreen() {
                     </Pressable>
                   ))}
                 </View>
+
+                <Text style={styles.label}>Phone (optional)</Text>
+                <TextInput
+                  value={onboardingPhone}
+                  onChangeText={setOnboardingPhone}
+                  placeholder="+27... — used for payments, shown on your profile"
+                  placeholderTextColor="#8d90a6"
+                  style={styles.input}
+                  keyboardType="phone-pad"
+                />
+                {phoneSaveError ? <Text style={styles.errorText}>{phoneSaveError}</Text> : null}
+
                 <Pressable
                   style={[styles.button, !canProceedStep3 && styles.buttonDisabled]}
                   disabled={!canProceedStep3}
-                  onPress={() => setStep(4)}>
+                  onPress={() => {
+                    savePhoneIfChanged();
+                    setStep(4);
+                  }}>
                   <Text style={styles.buttonText}>Next</Text>
                 </Pressable>
               </View>
@@ -1663,30 +1752,6 @@ const styles = StyleSheet.create({
     color: '#151722',
     fontWeight: '700',
     fontSize: 18,
-  },
-  authModeRow: {
-    flexDirection: 'row' as const,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: 18,
-  },
-  authModeTab: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: 'center' as const,
-  },
-  authModeTabActive: {
-    backgroundColor: '#ff6b35',
-  },
-  authModeText: {
-    color: '#9ca3c4',
-    fontWeight: '600' as const,
-    fontSize: 14,
-  },
-  authModeTextActive: {
-    color: '#fff',
   },
   suggestionRow: {
     flexDirection: 'row',

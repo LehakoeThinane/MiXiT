@@ -136,6 +136,7 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
     '/:roomId/messages',
     {
       preHandler: [fastify.authenticate],
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
       schema: {
         body: {
           type: 'object',

@@ -48,6 +48,16 @@ function validatePublicApiUrl(input: string) {
   return value.replace(/\/+$/, '');
 }
 
+// Google mints ID tokens with a different `aud` per platform (iOS/Android/Web client
+// IDs) — accept all of them, not just one. Empty is valid pre-setup; /auth/google
+// returns 501 until at least one is configured, rather than failing boot.
+function parseGoogleClientIds(input: string | undefined) {
+  return (input ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 const DEV_JWT_SECRET_FALLBACK = 'dev-jwt-secret-do-not-use-in-production';
 
 function validateJwtSecret(input: string | undefined, nodeEnv: string) {
@@ -91,6 +101,8 @@ export const env = {
   payfastMode: (process.env.PAYFAST_MODE?.trim().toLowerCase() === 'live' ? 'live' : 'sandbox') as
     | 'live'
     | 'sandbox',
+  sentryDsn: process.env.SENTRY_DSN?.trim() ?? '',
+  googleClientIds: parseGoogleClientIds(process.env.GOOGLE_CLIENT_IDS),
 };
 
 if (nodeEnv === 'production' && env.payfastMode === 'live' && (!env.payfastMerchantId || !env.payfastMerchantKey)) {

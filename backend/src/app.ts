@@ -2,6 +2,7 @@ import cors from '@fastify/cors';
 import formbody from '@fastify/formbody';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import * as Sentry from '@sentry/node';
 import Fastify from 'fastify';
 
 import authRoutes from './modules/auth/routes.js';
@@ -28,6 +29,10 @@ export function buildApp() {
     requestTimeout: 30_000,
   });
 
+  if (env.sentryDsn) {
+    Sentry.setupFastifyErrorHandler(app);
+  }
+
   app.register(helmet);
   app.register(cors, { origin: env.corsOrigin });
   app.register(formbody); // PayFast's ITN webhook posts application/x-www-form-urlencoded
@@ -35,6 +40,11 @@ export function buildApp() {
     global: true,
     max: 200,
     timeWindow: 60_000,
+    redis, // shared store — without this, limits are per-process and become meaningless
+           // (effectively N× looser) the moment this runs as more than one instance
+    skipOnError: true, // Redis outage degrades to unlimited rather than blocking all traffic —
+                        // same fail-open posture as this app's other Redis usage (profile cache,
+                        // Socket.IO adapter)
     errorResponseBuilder: (_req, context) => ({
       ok: false,
       message: `Too many requests — try again in ${Math.ceil((context.ttl ?? 60_000) / 1000)}s.`,
