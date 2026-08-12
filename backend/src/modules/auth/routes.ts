@@ -1,26 +1,32 @@
-import bcrypt from 'bcryptjs';
+import { Prisma } from '@prisma/client';
+import { OAuth2Client } from 'google-auth-library';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { env } from '../../shared/config/env.js';
 import { logger } from '../../shared/utils/logger.js';
 import { hashToken, signAccessToken, signRefreshToken, verifyRefreshToken } from '../../shared/auth/jwt.js';
 
-const BCRYPT_ROUNDS = 10;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-type RegisterBody = { phone: string; password: string };
-type LoginBody = { phone: string; password: string };
+type GoogleSignInBody = { idToken: string };
+type UpdatePhoneBody = { phone: string };
 type RefreshBody = { refreshToken: string };
 type LogoutBody = { refreshToken: string };
 
-const phonePasswordSchema = {
+const googleSignInSchema = {
   body: {
     type: 'object',
-    required: ['phone', 'password'],
-    properties: {
-      phone: { type: 'string', minLength: 8, maxLength: 20 },
-      password: { type: 'string', minLength: 6, maxLength: 100 },
-    },
+    required: ['idToken'],
+    properties: { idToken: { type: 'string', minLength: 16 } },
+  },
+} as const;
+
+const phoneSchema = {
+  body: {
+    type: 'object',
+    required: ['phone'],
+    properties: { phone: { type: 'string', minLength: 8, maxLength: 20 } },
   },
 } as const;
 
@@ -53,8 +59,16 @@ function isValidPhone(phone: string) {
   return /^\+?[1-9]\d{7,14}$/.test(phone);
 }
 
-async function issueTokens(userId: string, phone: string, req: FastifyRequest) {
-  const accessToken = signAccessToken(userId, phone);
+function isUniqueConstraintError(error: unknown): error is Prisma.PrismaClientKnownRequestError {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+// A single client verifies tokens against any configured audience — iOS/Android/Web
+// each mint ID tokens with a different `aud` claim from the same Google Cloud project.
+const googleClient = new OAuth2Client();
+
+async function issueTokens(userId: string, email: string, req: FastifyRequest) {
+  const accessToken = signAccessToken(userId, email);
   const refreshToken = signRefreshToken(userId);
 
   await prisma.refreshSession.create({
@@ -71,63 +85,86 @@ async function issueTokens(userId: string, phone: string, req: FastifyRequest) {
 }
 
 const authRoutes: FastifyPluginAsync = async (fastify) => {
-  fastify.post<{ Body: RegisterBody }>(
-    '/register',
-    { schema: phonePasswordSchema, config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
+  fastify.post<{ Body: GoogleSignInBody }>(
+    '/google',
+    {
+      schema: googleSignInSchema,
+      config: { rateLimit: { max: 20, timeWindow: '15 minutes' } },
+    },
     async (req, reply) => {
-      const phone = normalizePhone(req.body.phone);
-      const { password } = req.body;
-
-      if (!isValidPhone(phone)) {
-        return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
+      if (env.googleClientIds.length === 0) {
+        return reply.code(501).send({ ok: false, message: 'Google Sign-In is not configured' });
       }
 
-      const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-      const existing = await prisma.user.findUnique({ where: { phone } });
-
-      if (existing?.passwordHash) {
-        return reply.code(409).send({ ok: false, message: 'Phone already registered — sign in instead' });
+      let payload;
+      try {
+        const ticket = await googleClient.verifyIdToken({
+          idToken: req.body.idToken,
+          audience: env.googleClientIds,
+        });
+        payload = ticket.getPayload();
+      } catch {
+        return reply.code(401).send({ ok: false, message: 'Invalid Google sign-in' });
       }
 
-      const user = existing
-        ? await prisma.user.update({ where: { id: existing.id }, data: { passwordHash } })
-        : await prisma.user.create({ data: { phone, passwordHash } });
+      if (!payload?.sub || !payload.email || !payload.email_verified) {
+        return reply.code(401).send({ ok: false, message: 'Invalid Google sign-in' });
+      }
 
-      logger.info('User registered', { userId: user.id });
+      const googleId = payload.sub;
+      const email = payload.email;
+
+      let user;
+      try {
+        // Upsert, not find-then-create — a double-tap or client retry racing two
+        // concurrent requests would otherwise hit an unhandled unique-constraint 500.
+        user = await prisma.user.upsert({
+          where: { googleId },
+          update: { email },
+          create: { googleId, email },
+        });
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          return reply.code(409).send({ ok: false, message: 'Email already in use by another account' });
+        }
+        throw error;
+      }
+
+      logger.info('User signed in via Google', { userId: user.id });
 
       return {
         ok: true,
-        user: { id: user.id, phone: user.phone },
-        tokens: await issueTokens(user.id, user.phone, req),
+        user: { id: user.id, email: user.email, phone: user.phone },
+        tokens: await issueTokens(user.id, user.email, req),
       };
     }
   );
 
-  fastify.post<{ Body: LoginBody }>(
-    '/login',
-    { schema: phonePasswordSchema, config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } },
+  fastify.put<{ Body: UpdatePhoneBody }>(
+    '/phone',
+    {
+      preHandler: [fastify.authenticate],
+      schema: phoneSchema,
+      config: { rateLimit: { max: 10, timeWindow: '1 hour' } },
+    },
     async (req, reply) => {
       const phone = normalizePhone(req.body.phone);
-      const { password } = req.body;
-
       if (!isValidPhone(phone)) {
         return reply.code(400).send({ ok: false, message: 'Invalid phone format' });
       }
 
-      const user = await prisma.user.findUnique({ where: { phone } });
-      const isValid = user?.passwordHash ? await bcrypt.compare(password, user.passwordHash) : false;
-
-      if (!user || !isValid) {
-        return reply.code(401).send({ ok: false, message: 'Invalid phone or password' });
+      try {
+        const user = await prisma.user.update({
+          where: { id: req.user.sub },
+          data: { phone },
+        });
+        return { ok: true, phone: user.phone };
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          return reply.code(409).send({ ok: false, message: 'Phone already in use' });
+        }
+        throw error;
       }
-
-      logger.info('User logged in', { userId: user.id });
-
-      return {
-        ok: true,
-        user: { id: user.id, phone: user.phone },
-        tokens: await issueTokens(user.id, user.phone, req),
-      };
     }
   );
 
@@ -148,7 +185,27 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         const tokenHash = hashToken(req.body.refreshToken);
         const session = await prisma.refreshSession.findUnique({ where: { tokenHash } });
 
-        if (!session || session.revokedAt || session.expiresAt < new Date()) {
+        if (!session) {
+          return reply.code(401).send({ ok: false, message: 'Refresh token expired' });
+        }
+
+        if (session.revokedAt) {
+          // This token was already rotated away by an earlier /refresh call — someone is
+          // replaying a stale refresh token (device sync bug, or theft). Treat it as a
+          // compromise signal: kill every other active session for this user so a stolen
+          // token can't keep refreshing itself indefinitely.
+          const revoked = await prisma.refreshSession.updateMany({
+            where: { userId: session.userId, revokedAt: null },
+            data: { revokedAt: new Date() },
+          });
+          logger.warn('Refresh token reuse detected — session family revoked', {
+            userId: session.userId,
+            sessionsRevoked: revoked.count,
+          });
+          return reply.code(401).send({ ok: false, message: 'Refresh token expired' });
+        }
+
+        if (session.expiresAt < new Date()) {
           return reply.code(401).send({ ok: false, message: 'Refresh token expired' });
         }
 
@@ -157,7 +214,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
           return reply.code(401).send({ ok: false, message: 'User not found' });
         }
 
-        const accessToken = signAccessToken(user.id, user.phone);
+        const accessToken = signAccessToken(user.id, user.email);
         const refreshToken = signRefreshToken(user.id);
         const newSession = await prisma.refreshSession.create({
           data: {
@@ -175,7 +232,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
 
         return {
           ok: true,
-          user: { id: user.id, phone: user.phone },
+          user: { id: user.id, email: user.email, phone: user.phone },
           tokens: { accessToken, refreshToken },
         };
       } catch {

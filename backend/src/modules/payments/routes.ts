@@ -203,7 +203,10 @@ const paymentRoutes: FastifyPluginAsync = async (fastify) => {
   // Unauthenticated by necessity (PayFast/the device's browser hits this,
   // not our API client) — protected only by the unguessable UUID reference,
   // which was handed only to the authenticated user who created it.
-  fastify.get<{ Params: { reference: string } }>('/checkout/:reference', async (req, reply) => {
+  // Default Helmet CSP disallows the inline onload="" that auto-submits this page
+  // to PayFast — this route serves a one-off redirect bridge, not JSON, so relax
+  // CSP here only rather than weakening it globally.
+  fastify.get<{ Params: { reference: string } }>('/checkout/:reference', { helmet: { contentSecurityPolicy: false } }, async (req, reply) => {
     const purchase = await prisma.userPurchase.findUnique({
       where: { merchantReference: req.params.reference },
       include: { product: true, user: { select: { phone: true } } },
@@ -220,7 +223,7 @@ const paymentRoutes: FastifyPluginAsync = async (fastify) => {
       returnUrl: `${env.publicApiUrl}/payments/return?ref=${purchase.merchantReference}`,
       cancelUrl: `${env.publicApiUrl}/payments/cancel?ref=${purchase.merchantReference}`,
       notifyUrl: `${env.publicApiUrl}/payments/itn`,
-      buyerPhone: toLocalCellNumber(purchase.user.phone),
+      buyerPhone: purchase.user.phone ? toLocalCellNumber(purchase.user.phone) : null,
     });
 
     return reply.type('text/html; charset=utf-8').send(renderCheckoutRedirectPage(fields));

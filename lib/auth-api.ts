@@ -2,7 +2,8 @@ import { apiRequest } from '@/lib/api-client';
 
 export type AuthUser = {
   id: string;
-  phone: string;
+  email: string;
+  phone: string | null;
 };
 
 type AuthResponse = {
@@ -20,7 +21,8 @@ type MeResponse = {
   ok: boolean;
   user: {
     id: string;
-    phone: string;
+    email: string;
+    phone: string | null;
     profile: {
       displayName: string;
       age: number;
@@ -30,17 +32,18 @@ type MeResponse = {
   } | null;
 };
 
-export async function register(phone: string, password: string) {
-  return apiRequest<AuthResponse>('/auth/register', {
+export async function googleSignIn(idToken: string) {
+  return apiRequest<AuthResponse>('/auth/google', {
     method: 'POST',
-    body: { phone, password },
+    body: { idToken },
   });
 }
 
-export async function login(phone: string, password: string) {
-  return apiRequest<AuthResponse>('/auth/login', {
-    method: 'POST',
-    body: { phone, password },
+export async function updatePhone(phone: string) {
+  return apiRequest<{ ok: boolean; phone: string }>('/auth/phone', {
+    method: 'PUT',
+    auth: true,
+    body: { phone },
   });
 }
 

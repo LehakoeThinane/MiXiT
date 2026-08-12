@@ -5,7 +5,7 @@ import { env } from '../config/env.js';
 
 export type AuthenticatedUser = {
   sub: string;
-  phone: string;
+  email: string;
 };
 
 type AccessTokenPayload = AuthenticatedUser & {
@@ -21,8 +21,8 @@ type RefreshTokenPayload = {
   exp?: number;
 };
 
-export function signAccessToken(sub: string, phone: string): string {
-  return jwt.sign({ sub, phone, type: 'access' }, env.jwtSecret, { expiresIn: '1h' });
+export function signAccessToken(sub: string, email: string): string {
+  return jwt.sign({ sub, email, type: 'access' }, env.jwtSecret, { expiresIn: '1h' });
 }
 
 export function signRefreshToken(sub: string): string {
@@ -32,7 +32,7 @@ export function signRefreshToken(sub: string): string {
 export function verifyAccessToken(token: string): AuthenticatedUser {
   const payload = jwt.verify(token, env.jwtSecret) as AccessTokenPayload;
   if (payload.type !== 'access') throw new Error('Not an access token');
-  return { sub: payload.sub, phone: payload.phone };
+  return { sub: payload.sub, email: payload.email };
 }
 
 export function verifyRefreshToken(token: string): { sub: string } {

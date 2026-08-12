@@ -11,10 +11,10 @@ import {
 } from './jwt.js';
 
 describe('access tokens', () => {
-  it('round-trips sub and phone through sign/verify', () => {
-    const token = signAccessToken('user-1', '+27821234567');
+  it('round-trips sub and email through sign/verify', () => {
+    const token = signAccessToken('user-1', 'user1@example.com');
     const payload = verifyAccessToken(token);
-    expect(payload).toEqual({ sub: 'user-1', phone: '+27821234567' });
+    expect(payload).toEqual({ sub: 'user-1', email: 'user1@example.com' });
   });
 
   it('rejects a refresh token presented as an access token', () => {
@@ -27,7 +27,7 @@ describe('access tokens', () => {
   });
 
   it('rejects a token signed with a different secret (forged token)', () => {
-    const forged = jwt.sign({ sub: 'attacker', phone: '+27000000000', type: 'access' }, 'wrong-secret', {
+    const forged = jwt.sign({ sub: 'attacker', email: 'attacker@example.com', type: 'access' }, 'wrong-secret', {
       expiresIn: '1h',
     });
     expect(() => verifyAccessToken(forged)).toThrow();
@@ -41,7 +41,7 @@ describe('refresh tokens', () => {
   });
 
   it('rejects an access token presented as a refresh token', () => {
-    const accessToken = signAccessToken('user-2', '+27821234567');
+    const accessToken = signAccessToken('user-2', 'user2@example.com');
     expect(() => verifyRefreshToken(accessToken)).toThrow();
   });
 });

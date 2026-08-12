@@ -93,8 +93,8 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
 
       conversations.push({
         id: peer.id,
-        name: peerProfile?.displayName ?? peer.phone,
-        initial: (peerProfile?.displayName ?? peer.phone).slice(0, 1).toUpperCase(),
+        name: peerProfile?.displayName ?? peer.email,
+        initial: (peerProfile?.displayName ?? peer.email).slice(0, 1).toUpperCase(),
         preview: formatPreview(message.type, message.content),
         lastMessageAt: message.createdAt.toISOString(),
         online:

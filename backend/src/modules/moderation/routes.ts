@@ -57,7 +57,7 @@ const moderationRoutes: FastifyPluginAsync = async (fastify) => {
       ok: true,
       blocked: blocks.map((block) => ({
         userId: block.blockedId,
-        name: block.blocked.profile?.displayName ?? block.blocked.phone,
+        name: block.blocked.profile?.displayName ?? block.blocked.email,
         blockedAt: block.createdAt.toISOString(),
       })),
     };
