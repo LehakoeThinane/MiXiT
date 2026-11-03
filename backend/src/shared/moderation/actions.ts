@@ -85,29 +85,15 @@ export async function releaseHold(userId: string): Promise<void> {
   await prisma.user.update({ where: { id: userId }, data: { heldAt: null } });
 }
 
-const AUTO_HOLD_DISTINCT_REPORTERS = 3;
-const AUTO_HOLD_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-
 /**
- * Automatic safety hold so serious reports take effect before a human gets to
- * them: any "underage" report, or open reports from several different people.
+ * Automatic safety hold: only "underage" reports hide the reported user before a
+ * moderator reviews them (child safety). All other reports wait for human review,
+ * so a false or malicious report can't take someone off the app on its own.
  */
 export async function applyAutoHold(reportedId: string, reason: string): Promise<boolean> {
-  let shouldHold = reason === 'underage';
-  if (!shouldHold) {
-    const reporters = await prisma.report.findMany({
-      where: {
-        reportedId,
-        status: 'open',
-        createdAt: { gte: new Date(Date.now() - AUTO_HOLD_WINDOW_MS) },
-      },
-      distinct: ['reporterId'],
-      select: { reporterId: true },
-    });
-    shouldHold = reporters.length >= AUTO_HOLD_DISTINCT_REPORTERS;
-  }
-  if (shouldHold) await holdUser(reportedId);
-  return shouldHold;
+  if (reason !== 'underage') return false;
+  await holdUser(reportedId);
+  return true;
 }
 
 /** Prisma filter for users whose content may be shown to others. */

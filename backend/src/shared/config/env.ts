@@ -123,8 +123,8 @@ export const env = {
   reviewAccountEmail: process.env.REVIEW_ACCOUNT_EMAIL?.trim().toLowerCase() ?? '',
   reviewAccountPassword: process.env.REVIEW_ACCOUNT_PASSWORD?.trim() ?? '',
   // Shown on the public legal/support pages and used as the contact address.
-  legalEntityName: process.env.LEGAL_ENTITY_NAME?.trim() || 'MiXiT',
-  supportEmail: process.env.SUPPORT_EMAIL?.trim() || 'support@mixit.app',
+  legalEntityName: process.env.LEGAL_ENTITY_NAME?.trim() || 'Peloentle Digital Solution',
+  supportEmail: process.env.SUPPORT_EMAIL?.trim() || 'mixit@peloentle.com',
 };
 
 if (nodeEnv === 'production' && env.payfastMode === 'live' && (!env.payfastMerchantId || !env.payfastMerchantKey)) {

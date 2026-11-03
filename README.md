@@ -158,8 +158,8 @@ Information) and Google (App access). Reviewers use "App reviewer? Sign in with 
 - Users can report/block from profiles, the chat ⋯ menu, and by long-pressing chat or room messages.
 - Text is checked against `backend/src/shared/moderation/content-filter.ts` (hate slurs,
   child-exploitation terms, self-harm incitement).
-- "Underage" reports, or reports from 3+ different users in 7 days, automatically hide the
-  reported user until reviewed.
+- "Underage" reports automatically hide the reported user until a moderator reviews them.
+  All other reports wait for human review.
 - Set `MODERATION_WEBHOOK_URL` (Slack/Discord) to be pinged for every new report.
 - Set `ADMIN_API_KEY` and work the queue with header `x-admin-key`:
 
