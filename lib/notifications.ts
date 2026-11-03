@@ -5,7 +5,13 @@ import { Platform } from 'react-native';
 
 import { apiRequest } from '@/lib/api-client';
 
-export async function registerForPushNotifications(): Promise<void> {
+/**
+ * Registers this device for push notifications. With `prompt: false` (app start)
+ * it only registers if permission was already granted; the system prompt is shown
+ * only with `prompt: true`, from a moment where notifications clearly make sense
+ * (after onboarding or the first message), not on first launch.
+ */
+export async function registerForPushNotifications(options: { prompt?: boolean } = {}): Promise<void> {
   if (!Device.isDevice) return;
   if (Constants.appOwnership === 'expo') return; // Expo Go dropped remote push in SDK 53
 
@@ -22,6 +28,7 @@ export async function registerForPushNotifications(): Promise<void> {
   let finalStatus = existing;
 
   if (existing !== 'granted') {
+    if (!options.prompt) return;
     const { status } = await Notifications.requestPermissionsAsync();
     finalStatus = status;
   }

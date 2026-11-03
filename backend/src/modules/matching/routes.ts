@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { visibleUserFilter } from '../../shared/moderation/actions.js';
 import { getBlockedUserIds, isBlockedPair } from '../../shared/moderation/blocks.js';
 import { sendPushNotification } from '../../shared/push/expo-push.js';
 
@@ -189,6 +190,9 @@ function mapProfileToDiscoverCard(
 // Routes
 // ---------------------------------------------------------------------------
 
+// Premium profiles outrank any non-Premium profile (base scores max out at 100).
+const PREMIUM_SCORE_BONUS = 100;
+
 const matchingRoutes: FastifyPluginAsync = async (fastify) => {
   // ---- Discover candidates (scored) ----
   fastify.get(
@@ -219,18 +223,55 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
       ]);
       excludedUserIds.add(currentUserId);
 
-      const profiles = await prisma.profile.findMany({
+      // Paid placement: Vibe Boost = top of Discover while active; Premium = ranked
+      // ahead of non-Premium profiles. These are exactly what the product
+      // descriptions in payments/routes.ts promise — keep the two in sync.
+      const now = new Date();
+      const activePerks = await prisma.userPurchase.findMany({
         where: {
+          status: 'active',
           userId: { notIn: Array.from(excludedUserIds) },
-          completedAt: { not: null },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+          product: { type: { in: ['subscription', 'boost'] } },
         },
-        orderBy: { updatedAt: 'desc' },
-        take: 40,
+        select: { userId: true, product: { select: { type: true } } },
+        take: 500,
       });
+      const boostedUserIds = new Set(activePerks.filter((p) => p.product.type === 'boost').map((p) => p.userId));
+      const premiumUserIds = new Set(
+        activePerks.filter((p) => p.product.type === 'subscription').map((p) => p.userId)
+      );
+
+      const [recentProfiles, perkProfiles] = await Promise.all([
+        prisma.profile.findMany({
+          where: {
+            userId: { notIn: Array.from(excludedUserIds) },
+            completedAt: { not: null },
+            user: visibleUserFilter,
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 40,
+        }),
+        // Boosted/Premium users must be eligible even if they aren't among the 40
+        // most recently updated profiles.
+        activePerks.length > 0
+          ? prisma.profile.findMany({
+              where: {
+                userId: { in: Array.from(new Set(activePerks.map((p) => p.userId))) },
+                completedAt: { not: null },
+                user: visibleUserFilter,
+              },
+              orderBy: { lastActive: 'desc' },
+              take: 40,
+            })
+          : Promise.resolve([]),
+      ]);
+      const profiles = [...new Map([...perkProfiles, ...recentProfiles].map((p) => [p.userId, p])).values()];
 
       // Score and sort candidates
       const scored = profiles.map((profile) => {
-        const score = scoreCandidate(myInterests, myIntents, profile);
+        const score =
+          scoreCandidate(myInterests, myIntents, profile) + (premiumUserIds.has(profile.userId) ? PREMIUM_SCORE_BONUS : 0);
         const distance = computeDistance(
           myProfile?.locationLat ?? null,
           myProfile?.locationLng ?? null,
@@ -242,7 +283,11 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
         return { profile, score, distance };
       });
 
-      scored.sort((a, b) => b.score - a.score);
+      scored.sort((a, b) => {
+        const boostDiff =
+          Number(boostedUserIds.has(b.profile.userId)) - Number(boostedUserIds.has(a.profile.userId));
+        return boostDiff !== 0 ? boostDiff : b.score - a.score;
+      });
 
       const candidates = scored
         .slice(0, 20)
@@ -283,8 +328,8 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
         .send({ ok: false, message: 'Cannot vibe yourself' });
     }
 
-    const targetUser = await prisma.user.findUnique({
-      where: { id: toUserId },
+    const targetUser = await prisma.user.findFirst({
+      where: { id: toUserId, ...visibleUserFilter },
       select: { id: true },
     });
     if (!targetUser) {
@@ -395,8 +440,13 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
         where: { userId: currentUserId },
       });
 
+      const blockedUserIds = await getBlockedUserIds(currentUserId);
       const incomingVibes = await prisma.vibe.findMany({
-        where: { toUserId: currentUserId },
+        where: {
+          toUserId: currentUserId,
+          fromUserId: { notIn: Array.from(blockedUserIds) },
+          fromUser: visibleUserFilter,
+        },
         include: {
           fromUser: {
             include: { profile: true },

@@ -34,6 +34,7 @@ function RootLayout() {
             <Stack.Screen name="profile/[id]" options={{ headerShown: false }} />
             <Stack.Screen name="room/[id]" options={{ headerShown: false }} />
             <Stack.Screen name="premium" options={{ headerShown: false }} />
+            <Stack.Screen name="blocked" options={{ headerShown: false }} />
           </Stack>
           <StatusBar style="auto" />
         </ThemeProvider>

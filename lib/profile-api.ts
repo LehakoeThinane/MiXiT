@@ -62,6 +62,11 @@ export async function requestPhotoUploadUrl(filename: string, mimeType: string):
   });
 }
 
+export async function requestVoiceIntroUploadUrl(): Promise<PhotoUploadUrlResponse> {
+  return apiRequest<PhotoUploadUrlResponse>('/profiles/me/voice-intro', { method: 'POST', auth: true });
+}
+
+/** PUTs a local file (photo or voice intro) to a signed storage upload URL. */
 export async function uploadPhotoToStorage(signedUrl: string, fileUri: string, mimeType: string): Promise<void> {
   // React Native's fetch returns status 0 for local file:// URIs — skip the ok check
   const fileResponse = await fetch(fileUri);

@@ -17,35 +17,56 @@ import {
 // Called lazily on the first list request.
 // ---------------------------------------------------------------------------
 
+// Descriptions must only promise what the app actually does (App Store 2.3.1 /
+// 3.1.2, Play deceptive-behaviour policy) — see the premium/boost ranking in
+// matching/routes.ts.
+const BOOST_DURATION_MS = 30 * 60 * 1000;
+
 const DEFAULT_PRODUCTS = [
   {
     slug: 'mixit-premium',
     name: 'MiXiT Premium',
     description:
-      'Unlimited vibes, see who viewed your profile, priority in Discover, and ad-free experience.',
+      'Priority placement in Discover — your profile is shown to more people, ahead of non-Premium profiles, for as long as you subscribe. Renews monthly until cancelled.',
     priceInCents: 9900,
     currency: 'ZAR',
     type: 'subscription',
+    active: true,
   },
   {
     slug: 'vibe-boost',
     name: 'Vibe Boost',
-    description:
-      'Get 10× more visibility for 30 minutes. Your profile appears at the top of Discover.',
+    description: 'Put your profile at the very top of Discover for 30 minutes, starting as soon as you buy it.',
     priceInCents: 2900,
     currency: 'ZAR',
     type: 'boost',
+    active: true,
   },
   {
+    // Retired: the Super Vibe highlight was never built. Kept (inactive) so any
+    // historical purchase rows still resolve their product.
     slug: 'super-vibe',
     name: 'Super Vibe (5 pack)',
-    description:
-      'Send a Super Vibe to stand out. Recipients see your vibe first with a special highlight.',
+    description: null,
     priceInCents: 4900,
     currency: 'ZAR',
     type: 'feature',
+    active: false,
   },
 ];
+
+// App Store Connect / Play Console product IDs → our catalog slugs. Create the
+// products in both consoles with exactly these IDs (Play subscriptions arrive from
+// RevenueCat as "<productId>:<basePlanId>", handled in slugForStoreProduct).
+export const STORE_PRODUCT_IDS: Record<string, string> = {
+  'mixit-premium': 'mixit_premium_monthly',
+  'vibe-boost': 'mixit_vibe_boost',
+};
+
+function slugForStoreProduct(storeProductId: string): string | null {
+  const baseId = storeProductId.split(':')[0];
+  return Object.entries(STORE_PRODUCT_IDS).find(([, id]) => id === baseId)?.[0] ?? null;
+}
 
 async function ensureSeedProducts() {
   await Promise.all(
@@ -59,6 +80,7 @@ async function ensureSeedProducts() {
           priceInCents: product.priceInCents,
           currency: product.currency,
           type: product.type,
+          active: product.active,
         },
       })
     )
@@ -76,8 +98,147 @@ function formatPrice(cents: number, currency: string) {
 
 function expiryForProductType(type: string): Date | null {
   if (type === 'subscription') return new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-  if (type === 'boost') return new Date(Date.now() + 24 * 60 * 60 * 1000);
+  if (type === 'boost') return new Date(Date.now() + BOOST_DURATION_MS);
   return null;
+}
+
+function isStorePurchase(merchantReference: string) {
+  return merchantReference.startsWith('rc:');
+}
+
+function safeEqual(a: string, b: string) {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type RevenueCatEvent = {
+  type: string;
+  app_user_id?: string;
+  original_app_user_id?: string;
+  aliases?: string[];
+  product_id?: string;
+  new_product_id?: string;
+  store?: string;
+  environment?: string;
+  transaction_id?: string;
+  original_transaction_id?: string;
+  purchased_at_ms?: number;
+  expiration_at_ms?: number | null;
+  cancel_reason?: string;
+  price_in_purchased_currency?: number;
+  price?: number;
+  currency?: string;
+};
+
+/** The app calls Purchases.logIn(<our user id>), so one of these is our users.id. */
+async function resolveRevenueCatUser(event: RevenueCatEvent): Promise<string | null> {
+  const candidates = [event.app_user_id, event.original_app_user_id, ...(event.aliases ?? [])].filter(
+    (id): id is string => Boolean(id && UUID_RE.test(id))
+  );
+  for (const id of new Set(candidates)) {
+    const user = await prisma.user.findUnique({ where: { id }, select: { id: true } });
+    if (user) return user.id;
+  }
+  return null;
+}
+
+async function applyRevenueCatEvent(event: RevenueCatEvent): Promise<void> {
+  const userId = await resolveRevenueCatUser(event);
+  if (!userId) {
+    logger.warn('RevenueCat event for unknown user', { type: event.type, appUserId: event.app_user_id });
+    return;
+  }
+
+  const storeProductId = event.type === 'PRODUCT_CHANGE' ? event.new_product_id ?? event.product_id : event.product_id;
+  const slug = storeProductId ? slugForStoreProduct(storeProductId) : null;
+  const product = slug ? await prisma.product.findUnique({ where: { slug } }) : null;
+  if (!product) {
+    logger.warn('RevenueCat event for unmapped product', { type: event.type, productId: storeProductId });
+    return;
+  }
+
+  const store = (event.store ?? 'store').toLowerCase();
+  const amountInCents = Math.round((event.price_in_purchased_currency ?? event.price ?? 0) * 100);
+  const currency = event.currency ?? 'USD';
+
+  // ---- Consumable: Vibe Boost activates immediately for 30 minutes ----
+  if (product.type === 'boost') {
+    if (event.type !== 'NON_RENEWING_PURCHASE' || !event.transaction_id) return;
+    const merchantReference = `rc:${store}:${event.transaction_id}`;
+    await prisma.userPurchase.upsert({
+      where: { merchantReference },
+      update: {},
+      create: {
+        userId,
+        productId: product.id,
+        status: 'active',
+        merchantReference,
+        gatewayPaymentId: merchantReference,
+        amountInCents,
+        currency,
+        expiresAt: new Date(Date.now() + BOOST_DURATION_MS),
+      },
+    });
+    return;
+  }
+
+  // ---- Auto-renewing subscription: one row per original transaction ----
+  const originalId = event.original_transaction_id ?? event.transaction_id;
+  if (!originalId) return;
+  const merchantReference = `rc:${store}:${originalId}`;
+  const expiresAt = event.expiration_at_ms ? new Date(event.expiration_at_ms) : null;
+
+  switch (event.type) {
+    case 'INITIAL_PURCHASE':
+    case 'RENEWAL':
+    case 'UNCANCELLATION':
+    case 'PRODUCT_CHANGE':
+    case 'SUBSCRIPTION_EXTENDED':
+    case 'TEMPORARY_ENTITLEMENT_GRANT':
+    case 'REFUND_REVERSED':
+    case 'TRANSFER':
+      await prisma.userPurchase.upsert({
+        where: { merchantReference },
+        update: { userId, productId: product.id, status: 'active', expiresAt, cancelledAt: null },
+        create: {
+          userId,
+          productId: product.id,
+          status: 'active',
+          merchantReference,
+          amountInCents,
+          currency,
+          expiresAt,
+        },
+      });
+      return;
+    case 'CANCELLATION':
+      if (event.cancel_reason === 'CUSTOMER_SUPPORT') {
+        // Refunded — access ends now.
+        await prisma.userPurchase.updateMany({
+          where: { merchantReference },
+          data: { status: 'cancelled', cancelledAt: new Date(), expiresAt: new Date() },
+        });
+      } else {
+        // Auto-renew turned off — Premium continues until the paid period ends.
+        await prisma.userPurchase.updateMany({
+          where: { merchantReference },
+          data: { cancelledAt: new Date(), ...(expiresAt ? { expiresAt } : {}) },
+        });
+      }
+      return;
+    case 'EXPIRATION':
+      await prisma.userPurchase.updateMany({
+        where: { merchantReference },
+        data: { status: 'expired', ...(expiresAt ? { expiresAt } : {}) },
+      });
+      return;
+    default:
+      // BILLING_ISSUE (grace period keeps expiresAt), SUBSCRIPTION_PAUSED, TEST, etc.
+      return;
+  }
 }
 
 // PayFast's cell_number field expects a local 0-prefixed SA number; our
@@ -139,11 +300,33 @@ const paymentRoutes: FastifyPluginAsync = async (fastify) => {
         priceInCents: product.priceInCents,
         currency: product.currency,
         type: product.type,
+        storeProductId: STORE_PRODUCT_IDS[product.slug] ?? null,
       })),
     };
   });
 
-  // ---- Start a real PayFast checkout ----
+  // ---- RevenueCat webhook: App Store / Google Play purchase lifecycle ----
+  // iOS and Android sell digital goods only through Apple/Google billing (App Store
+  // 3.1.1, Play Payments policy). RevenueCat validates receipts with the stores and
+  // calls this endpoint; it is the source of truth for native purchases.
+  fastify.post('/revenuecat/webhook', async (req, reply) => {
+    if (!env.revenuecatWebhookAuth) {
+      return reply.code(503).send({ ok: false, message: 'RevenueCat webhook not configured' });
+    }
+    const authHeader = req.headers.authorization ?? '';
+    if (!safeEqual(authHeader, env.revenuecatWebhookAuth) && !safeEqual(authHeader, `Bearer ${env.revenuecatWebhookAuth}`)) {
+      return reply.code(401).send({ ok: false });
+    }
+
+    const event = (req.body as { event?: RevenueCatEvent } | undefined)?.event;
+    if (!event?.type) return reply.code(400).send({ ok: false, message: 'Missing event' });
+
+    await applyRevenueCatEvent(event);
+    logger.info('RevenueCat event processed', { type: event.type, environment: event.environment });
+    return { ok: true };
+  });
+
+  // ---- Start a PayFast checkout (web only — native apps must use store billing) ----
   fastify.post<{
     Body: { productSlug: string };
   }>(
@@ -347,6 +530,7 @@ const paymentRoutes: FastifyPluginAsync = async (fastify) => {
           productSlug: purchase.product.slug,
           productName: purchase.product.name,
           productType: purchase.product.type,
+          source: isStorePurchase(purchase.merchantReference) ? 'store' : 'payfast',
           status: purchase.status,
           price: formatPrice(purchase.amountInCents, purchase.currency),
           expiresAt: purchase.expiresAt?.toISOString() ?? null,
@@ -381,6 +565,13 @@ const paymentRoutes: FastifyPluginAsync = async (fastify) => {
 
       if (purchase.status !== 'active') {
         return reply.code(400).send({ ok: false, message: 'Purchase is not active' });
+      }
+
+      if (isStorePurchase(purchase.merchantReference)) {
+        return reply.code(400).send({
+          ok: false,
+          message: 'Manage this subscription in your App Store or Google Play account settings.',
+        });
       }
 
       await prisma.userPurchase.update({

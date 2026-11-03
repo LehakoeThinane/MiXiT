@@ -1,6 +1,8 @@
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import Slider from '@react-native-community/slider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import * as AppleAuthentication from 'expo-apple-authentication';
+import { Audio } from 'expo-av';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
@@ -23,9 +25,30 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, API_BASE_URL } from '@/lib/api-client';
-import { getCurrentUser, googleSignIn, updatePhone } from '@/lib/auth-api';
-import { getMyProfile, requestPhotoUploadUrl, uploadPhotoToStorage, upsertMyProfile } from '@/lib/profile-api';
+import {
+  appleSignIn,
+  deleteAccount,
+  getCurrentUser,
+  googleSignIn,
+  logoutSession,
+  reviewSignIn,
+  updatePhone,
+} from '@/lib/auth-api';
+import { openLegalPage } from '@/lib/legal';
+import { registerForPushNotifications } from '@/lib/notifications';
+import {
+  getMyProfile,
+  requestPhotoUploadUrl,
+  requestVoiceIntroUploadUrl,
+  uploadPhotoToStorage,
+  upsertMyProfile,
+} from '@/lib/profile-api';
+import { resetPurchasesUser } from '@/lib/purchases';
 import { useAuthStore } from '@/stores/auth-store';
+
+// Matches the backend profile schema (voiceIntroDurationSec 15–30).
+const VOICE_INTRO_MIN_SEC = 15;
+const VOICE_INTRO_MAX_SEC = 30;
 
 type Gender = 'male' | 'female' | 'other';
 type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -139,7 +162,7 @@ export default function ProfileTabScreen() {
   const orbB = useRef(new Animated.Value(0)).current;
   const orbC = useRef(new Animated.Value(0)).current;
   const orbD = useRef(new Animated.Value(0)).current;
-  const voiceTickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recordingRef = useRef<Audio.Recording | null>(null);
   const voiceMsRef = useRef(0);
   const sessionBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didShowSessionBannerRef = useRef(false);
@@ -170,7 +193,16 @@ export default function ProfileTabScreen() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const [waveform, setWaveform] = useState<number[]>(Array.from({ length: 24 }, () => 8));
-  const hasVoiceClip = recordSeconds > 0 && !isRecording;
+  // A new local recording waiting to be uploaded on save, or the already-saved intro.
+  const [pendingVoiceUri, setPendingVoiceUri] = useState<string | null>(null);
+  const [savedVoiceIntro, setSavedVoiceIntro] = useState<{ url: string; durationSec: number } | null>(null);
+  const hasVoiceClip = !isRecording && Boolean(pendingVoiceUri || savedVoiceIntro);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [isAppleSignInAvailable, setIsAppleSignInAvailable] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [showReviewLogin, setShowReviewLogin] = useState(false);
+  const [reviewEmail, setReviewEmail] = useState('');
+  const [reviewPassword, setReviewPassword] = useState('');
   const [stepError, setStepError] = useState<string | null>(null);
   const [showSessionRestoredBanner, setShowSessionRestoredBanner] = useState(false);
   const [showCompletionStep, setShowCompletionStep] = useState(false);
@@ -298,6 +330,12 @@ export default function ProfileTabScreen() {
     setSelectedPhotos(parseStringList(profile.photos).slice(0, 3));
     setShowPhone(profile.showPhone ?? true);
     setShowLastSeen(profile.showLastSeen ?? true);
+    setSavedVoiceIntro(
+      profile.voiceIntroUrl && profile.voiceIntroDurationSec
+        ? { url: profile.voiceIntroUrl, durationSec: profile.voiceIntroDurationSec }
+        : null
+    );
+    setPendingVoiceUri(null);
     if (profile.locationLat != null && profile.locationLng != null) {
       setLocationCoords((prev) => prev ?? { lat: profile.locationLat as number, lng: profile.locationLng as number });
     }
@@ -324,9 +362,15 @@ export default function ProfileTabScreen() {
     })();
   }, [step, isEditingProfile, isAuthenticated, locationCoords]);
 
-  const googleAuthMutation = useMutation({
-    mutationFn: (idToken: string) => googleSignIn(idToken),
-    onSuccess: async (payload) => {
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    AppleAuthentication.isAvailableAsync()
+      .then(setIsAppleSignInAvailable)
+      .catch(() => setIsAppleSignInAvailable(false));
+  }, []);
+
+  const authCallbacks = {
+    onSuccess: async (payload: Awaited<ReturnType<typeof googleSignIn>>) => {
       setStepError(null);
       setSession({
         user: payload.user,
@@ -336,12 +380,52 @@ export default function ProfileTabScreen() {
       setStep(3);
       await queryClient.invalidateQueries({ queryKey: ['profile', payload.user.id] });
     },
-    onError: (error) => {
+    onError: (error: unknown) => {
       const message = resolveErrorMessage(error);
       setStepError(message);
       Alert.alert('Sign in failed', message);
     },
+  };
+
+  const googleAuthMutation = useMutation({
+    mutationFn: (idToken: string) => googleSignIn(idToken, acceptedTerms),
+    ...authCallbacks,
   });
+
+  const appleAuthMutation = useMutation({
+    mutationFn: (identityToken: string) => appleSignIn(identityToken, acceptedTerms),
+    ...authCallbacks,
+  });
+
+  const reviewAuthMutation = useMutation({
+    mutationFn: () => reviewSignIn(reviewEmail.trim(), reviewPassword),
+    ...authCallbacks,
+  });
+
+  const isSigningIn = googleAuthMutation.isPending || appleAuthMutation.isPending || reviewAuthMutation.isPending;
+
+  const handleAppleSignIn = async () => {
+    if (!acceptedTerms) return;
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+      if (!credential.identityToken) {
+        setStepError('Apple did not return a sign-in token. Please try again.');
+        return;
+      }
+      // Apple only shares the name on the very first sign-in — use it as a suggestion.
+      const givenName = credential.fullName?.givenName?.trim();
+      if (givenName && !displayName) setDisplayName(givenName.slice(0, 30));
+      appleAuthMutation.mutate(credential.identityToken);
+    } catch (error) {
+      if ((error as { code?: string })?.code === 'ERR_REQUEST_CANCELED') return;
+      setStepError(resolveErrorMessage(error));
+    }
+  };
 
   const updatePhoneMutation = useMutation({
     mutationFn: (value: string) => updatePhone(value),
@@ -364,6 +448,7 @@ export default function ProfileTabScreen() {
   };
 
   const handleGoogleSignIn = async () => {
+    if (!acceptedTerms) return;
     try {
       if (Platform.OS === 'android') {
         await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
@@ -378,9 +463,25 @@ export default function ProfileTabScreen() {
     }
   };
 
+  // Uploads a freshly recorded intro; otherwise keeps the saved one (the backend
+  // clears the intro when these fields are omitted).
+  const resolveVoiceIntroForSave = async (): Promise<{ url: string; durationSec: number } | null> => {
+    if (!pendingVoiceUri) return savedVoiceIntro;
+    const durationSec = Math.min(VOICE_INTRO_MAX_SEC, Math.max(VOICE_INTRO_MIN_SEC, recordSeconds));
+    const { signedUrl, publicUrl } = await requestVoiceIntroUploadUrl();
+    await uploadPhotoToStorage(signedUrl, pendingVoiceUri, 'audio/m4a');
+    const uploaded = { url: publicUrl, durationSec };
+    setSavedVoiceIntro(uploaded);
+    setPendingVoiceUri(null);
+    return uploaded;
+  };
+
   const saveProfileMutation = useMutation({
-    mutationFn: async (fromEditProfile: boolean) =>
-      upsertMyProfile({
+    mutationFn: async (fromEditProfile: boolean) => {
+      const voiceIntro = await resolveVoiceIntroForSave();
+      return upsertMyProfile({
+        voiceIntroUrl: voiceIntro?.url,
+        voiceIntroDurationSec: voiceIntro?.durationSec,
         displayName: displayName.trim(),
         age,
         gender,
@@ -398,7 +499,8 @@ export default function ProfileTabScreen() {
         photos: selectedPhotos.slice(0, 3),
         showPhone,
         showLastSeen,
-      }),
+      });
+    },
     onSuccess: async (_data, fromEditProfile) => {
       setStepError(null);
       await queryClient.invalidateQueries({ queryKey: ['profile', user?.id] });
@@ -470,12 +572,8 @@ export default function ProfileTabScreen() {
   const pickPhotoAt = async (index: number) => {
     if (uploadingPhotoIndex !== null) return;
 
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Permission needed', 'Allow photo access to add profile images.');
-      return;
-    }
-
+    // No media-library permission needed: the system photo picker grants one-off
+    // access (Google Play photo/video permission policy).
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: true,
@@ -513,8 +611,95 @@ export default function ProfileTabScreen() {
     setSelectedPhotos((prev) => prev.filter((_, position) => position !== index));
   };
 
-  const handleLogout = () => {
+  // ---- Voice intro: real recording via expo-av, uploaded when the profile is saved ----
+  const finishRecording = async () => {
+    const recording = recordingRef.current;
+    if (!recording) return;
+    recordingRef.current = null;
+    try {
+      await recording.stopAndUnloadAsync();
+    } catch {
+      // already stopped
+    }
+    await Audio.setAudioModeAsync({ allowsRecordingIOS: false }).catch(() => undefined);
+    setIsRecording(false);
+
+    const seconds = Math.floor(voiceMsRef.current / 1000);
+    const uri = recording.getURI();
+    if (!uri) return;
+    if (seconds < VOICE_INTRO_MIN_SEC) {
+      setRecordSeconds(0);
+      setPendingVoiceUri(null);
+      Alert.alert('Too short', `Voice intros need to be at least ${VOICE_INTRO_MIN_SEC} seconds. Tap the mic to try again.`);
+      return;
+    }
+    setRecordSeconds(Math.min(seconds, VOICE_INTRO_MAX_SEC));
+    setPendingVoiceUri(uri);
+  };
+
+  const onRecordingStatus = (status: Audio.RecordingStatus) => {
+    if (!status.isRecording) return;
+    voiceMsRef.current = status.durationMillis;
+    setRecordSeconds(Math.floor(status.durationMillis / 1000));
+    const level = typeof status.metering === 'number' ? status.metering : -60; // dBFS, -160..0
+    const height = 6 + Math.round(Math.max(0, Math.min(1, (level + 60) / 60)) * 22);
+    setWaveform((prev) => [...prev.slice(-39), height]);
+    if (status.durationMillis >= VOICE_INTRO_MAX_SEC * 1000) {
+      void finishRecording();
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const { granted } = await Audio.requestPermissionsAsync();
+      if (!granted) {
+        Alert.alert(
+          'Microphone access needed',
+          'To record a voice intro, allow microphone access for MiXiT in Settings. You can also skip this step.'
+        );
+        return;
+      }
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      voiceMsRef.current = 0;
+      setRecordSeconds(0);
+      setPendingVoiceUri(null);
+      setWaveform(Array.from({ length: 24 }, () => 6));
+      const { recording } = await Audio.Recording.createAsync(
+        { ...Audio.RecordingOptionsPresets.HIGH_QUALITY, isMeteringEnabled: true },
+        onRecordingStatus,
+        120
+      );
+      recordingRef.current = recording;
+      setIsRecording(true);
+    } catch (error) {
+      setIsRecording(false);
+      Alert.alert('Recording failed', resolveErrorMessage(error));
+    }
+  };
+
+  const startOrRedoRecording = () => {
+    if (isRecording) {
+      void finishRecording();
+      return;
+    }
+    void startRecording();
+  };
+
+  const discardRecording = () => {
+    const recording = recordingRef.current;
+    recordingRef.current = null;
+    if (recording) recording.stopAndUnloadAsync().catch(() => undefined);
+    setIsRecording(false);
+    setPendingVoiceUri(null);
+    setRecordSeconds(0);
+  };
+
+  const resetLocalState = () => {
     clearSession();
+    void resetPurchasesUser();
+    discardRecording();
+    setSavedVoiceIntro(null);
+    setAcceptedTerms(false);
     setStep(1);
     setOnboardingPhone('');
     setPhoneSaveError(null);
@@ -528,8 +713,6 @@ export default function ProfileTabScreen() {
     setSelectedPhotos([]);
     setShowPhone(true);
     setShowLastSeen(true);
-    setIsRecording(false);
-    setRecordSeconds(0);
     setStepError(null);
     setShowCompletionStep(false);
     setIsEditingProfile(false);
@@ -537,39 +720,50 @@ export default function ProfileTabScreen() {
     locationRequestedRef.current = false;
   };
 
-  const stopRecording = () => {
-    if (voiceTickerRef.current) {
-      clearInterval(voiceTickerRef.current);
-      voiceTickerRef.current = null;
-    }
-    setIsRecording(false);
+  const handleLogout = () => {
+    void logoutSession(refreshToken);
+    resetLocalState();
   };
 
-  const startOrRedoRecording = () => {
-    if (isRecording) {
-      stopRecording();
-      return;
-    }
-
-    voiceMsRef.current = 0;
-    setRecordSeconds(0);
-    setWaveform(Array.from({ length: 24 }, () => 6 + Math.round(Math.random() * 8)));
-    setIsRecording(true);
-
-    voiceTickerRef.current = setInterval(() => {
-      voiceMsRef.current += 120;
-      const seconds = Math.floor(voiceMsRef.current / 1000);
-      setRecordSeconds(seconds);
-      setWaveform((prev) => [...prev.slice(-39), 6 + Math.round(Math.random() * 18)]);
-      if (voiceMsRef.current >= 30000) {
-        stopRecording();
+  // ---- Account deletion (App Store 5.1.1(v) / Google Play account deletion policy) ----
+  const performAccountDeletion = async () => {
+    setIsDeletingAccount(true);
+    let appleAuthorizationCode: string | undefined;
+    if (Platform.OS === 'ios' && isAppleSignInAvailable && sessionQuery.data?.user?.appleId) {
+      // Apple requires revoking Sign in with Apple tokens on deletion; that needs a
+      // fresh authorization code. If the user dismisses the prompt, still delete.
+      try {
+        const credential = await AppleAuthentication.signInAsync({ requestedScopes: [] });
+        appleAuthorizationCode = credential.authorizationCode ?? undefined;
+      } catch {
+        // cancelled — continue without revocation
       }
-    }, 120);
+    }
+    try {
+      await deleteAccount(appleAuthorizationCode);
+      resetLocalState();
+      Alert.alert('Account deleted', 'Your MiXiT account and all its data have been permanently deleted.');
+    } catch (error) {
+      Alert.alert('Could not delete account', resolveErrorMessage(error));
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete your account?',
+      'This permanently deletes your profile, photos, voice intro, messages, vibes and purchase history. It can’t be undone.\n\nDeleting your account does not cancel an App Store or Google Play subscription — cancel it in your store settings to stop being charged.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete account', style: 'destructive', onPress: () => void performAccountDeletion() },
+      ]
+    );
   };
 
   useEffect(() => {
     return () => {
-      if (voiceTickerRef.current) clearInterval(voiceTickerRef.current);
+      recordingRef.current?.stopAndUnloadAsync().catch(() => undefined);
       if (sessionBannerTimerRef.current) clearTimeout(sessionBannerTimerRef.current);
     };
   }, []);
@@ -649,6 +843,36 @@ export default function ProfileTabScreen() {
       />
       <View style={styles.liquidScrim} />
     </View>
+  );
+
+  const voiceTimerSeconds = isRecording || pendingVoiceUri ? recordSeconds : savedVoiceIntro?.durationSec ?? 0;
+  const voiceRecorder = (
+    <>
+      <Text style={styles.label}>
+        {isRecording
+          ? `Recording… keep going for at least ${VOICE_INTRO_MIN_SEC} seconds`
+          : pendingVoiceUri
+          ? 'New intro recorded — it will be saved with your profile'
+          : savedVoiceIntro
+          ? 'Your voice intro is saved'
+          : `Record a ${VOICE_INTRO_MIN_SEC}-${VOICE_INTRO_MAX_SEC} second intro`}
+      </Text>
+      <Pressable
+        style={styles.recordButton}
+        onPress={startOrRedoRecording}
+        accessibilityLabel={isRecording ? 'Stop recording' : hasVoiceClip ? 'Record again' : 'Start recording'}>
+        <Text style={styles.recordButtonText}>{isRecording ? 'Stop' : hasVoiceClip ? 'Redo' : 'Mic'}</Text>
+      </Pressable>
+      <Text style={styles.timerText}>{`0:${String(voiceTimerSeconds).padStart(2, '0')}`}</Text>
+      <View style={styles.waveWrap}>
+        {waveform.map((h, i) => (
+          <View
+            key={`${i}-${h}`}
+            style={[styles.waveBar, { height: h }, !isRecording && hasVoiceClip && styles.waveBarRecorded]}
+          />
+        ))}
+      </View>
+    </>
   );
 
   if (!hasHydrated) {
@@ -892,9 +1116,12 @@ export default function ProfileTabScreen() {
                   </Pressable>
                 </View>
 
+                <Text style={styles.label}>Voice intro (optional)</Text>
+                {voiceRecorder}
+
                 <Pressable
-                  style={[styles.button, (!canSaveProfile || saveProfileMutation.isPending) && styles.buttonDisabled]}
-                  disabled={!canSaveProfile || saveProfileMutation.isPending}
+                  style={[styles.button, (!canSaveProfile || saveProfileMutation.isPending || isRecording) && styles.buttonDisabled]}
+                  disabled={!canSaveProfile || saveProfileMutation.isPending || isRecording}
                   onPress={() => {
                     savePhoneIfChanged();
                     saveProfileMutation.mutate(true);
@@ -922,7 +1149,13 @@ export default function ProfileTabScreen() {
                       setSelectedPhotos(parseStringList(currentProfile.photos).slice(0, 3));
                       setShowPhone(currentProfile.showPhone ?? true);
                       setShowLastSeen(currentProfile.showLastSeen ?? true);
+                      setSavedVoiceIntro(
+                        currentProfile.voiceIntroUrl && currentProfile.voiceIntroDurationSec
+                          ? { url: currentProfile.voiceIntroUrl, durationSec: currentProfile.voiceIntroDurationSec }
+                          : null
+                      );
                     }
+                    discardRecording();
                   }}>
                   <Text style={styles.secondaryButtonText}>Cancel</Text>
                 </Pressable>
@@ -1021,9 +1254,36 @@ export default function ProfileTabScreen() {
               </View>
             )}
 
+            <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/blocked')}>
+              <Text style={styles.secondaryButtonText}>Blocked users</Text>
+            </Pressable>
+
             <Pressable style={[styles.button, styles.secondaryButton]} onPress={handleLogout}>
               <Text style={styles.secondaryButtonText}>Log out</Text>
             </Pressable>
+
+            <Pressable
+              style={[styles.button, styles.dangerButton, isDeletingAccount && styles.buttonDisabled]}
+              disabled={isDeletingAccount}
+              onPress={handleDeleteAccount}>
+              {isDeletingAccount ? (
+                <ActivityIndicator color="#ff8a80" />
+              ) : (
+                <Text style={styles.dangerButtonText}>Delete account</Text>
+              )}
+            </Pressable>
+
+            <View style={styles.legalLinksRow}>
+              <Pressable onPress={() => openLegalPage('terms')}>
+                <Text style={styles.legalLinkText}>Terms</Text>
+              </Pressable>
+              <Pressable onPress={() => openLegalPage('privacy')}>
+                <Text style={styles.legalLinkText}>Privacy</Text>
+              </Pressable>
+              <Pressable onPress={() => openLegalPage('support')}>
+                <Text style={styles.legalLinkText}>Help & support</Text>
+              </Pressable>
+            </View>
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -1063,19 +1323,96 @@ export default function ProfileTabScreen() {
             {step === 1 && (
               <View style={styles.stepBlock}>
                 <Text style={styles.label}>Sign in to MiXiT</Text>
+
+                <Pressable
+                  style={styles.termsRow}
+                  onPress={() => setAcceptedTerms((prev) => !prev)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: acceptedTerms }}>
+                  <View style={[styles.checkbox, acceptedTerms && styles.checkboxChecked]}>
+                    {acceptedTerms ? <Text style={styles.checkboxTick}>✓</Text> : null}
+                  </View>
+                  <Text style={styles.termsText}>
+                    I&apos;m 18 or older and I agree to the{' '}
+                    <Text style={styles.termsLink} onPress={() => openLegalPage('terms')}>
+                      Terms of Use
+                    </Text>{' '}
+                    and{' '}
+                    <Text style={styles.termsLink} onPress={() => openLegalPage('privacy')}>
+                      Privacy Policy
+                    </Text>
+                    . MiXiT has zero tolerance for abusive users or objectionable content.
+                  </Text>
+                </Pressable>
+
+                {isAppleSignInAvailable ? (
+                  <View style={[!acceptedTerms || isSigningIn ? styles.buttonDisabled : null]}>
+                    <AppleAuthentication.AppleAuthenticationButton
+                      buttonType={AppleAuthentication.AppleAuthenticationButtonType.CONTINUE}
+                      buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+                      cornerRadius={14}
+                      style={styles.appleButton}
+                      onPress={() => {
+                        if (!acceptedTerms || isSigningIn) return;
+                        void handleAppleSignIn();
+                      }}
+                    />
+                  </View>
+                ) : null}
+
                 {isGoogleSignInConfigured ? (
                   <Pressable
-                    style={[styles.button, googleAuthMutation.isPending && styles.buttonDisabled]}
-                    disabled={googleAuthMutation.isPending}
+                    style={[styles.button, (isSigningIn || !acceptedTerms) && styles.buttonDisabled]}
+                    disabled={isSigningIn || !acceptedTerms}
                     onPress={handleGoogleSignIn}>
                     <Text style={styles.buttonText}>
-                      {googleAuthMutation.isPending ? 'Signing in...' : 'Continue with Google'}
+                      {isSigningIn ? 'Signing in...' : 'Continue with Google'}
                     </Text>
                   </Pressable>
                 ) : (
                   <Text style={styles.supportText}>
                     Google Sign-In is not configured yet. Set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID to enable it.
                   </Text>
+                )}
+
+                {/* Demo-account sign-in for App Store / Google Play reviewers. */}
+                {showReviewLogin ? (
+                  <View style={styles.reviewBlock}>
+                    <TextInput
+                      value={reviewEmail}
+                      onChangeText={setReviewEmail}
+                      placeholder="Email"
+                      placeholderTextColor="#8d90a6"
+                      style={styles.input}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="email-address"
+                      textContentType="username"
+                    />
+                    <TextInput
+                      value={reviewPassword}
+                      onChangeText={setReviewPassword}
+                      placeholder="Password"
+                      placeholderTextColor="#8d90a6"
+                      style={styles.input}
+                      secureTextEntry
+                      textContentType="password"
+                    />
+                    <Pressable
+                      style={[
+                        styles.button,
+                        styles.secondaryButton,
+                        (isSigningIn || !acceptedTerms || !reviewEmail.trim() || !reviewPassword) && styles.buttonDisabled,
+                      ]}
+                      disabled={isSigningIn || !acceptedTerms || !reviewEmail.trim() || !reviewPassword}
+                      onPress={() => reviewAuthMutation.mutate()}>
+                      <Text style={styles.secondaryButtonText}>Sign in</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <Pressable onPress={() => setShowReviewLogin(true)} style={styles.reviewLink}>
+                    <Text style={styles.legalLinkText}>App reviewer? Sign in with email</Text>
+                  </Pressable>
                 )}
               </View>
             )}
@@ -1213,23 +1550,7 @@ export default function ProfileTabScreen() {
 
             {step === 6 && (
               <View style={styles.stepBlock}>
-                <Text style={styles.label}>Record a 15-30 second intro</Text>
-                <Pressable style={styles.recordButton} onPress={startOrRedoRecording}>
-                  <Text style={styles.recordButtonText}>{isRecording ? 'Stop' : hasVoiceClip ? 'Redo' : 'Mic'}</Text>
-                </Pressable>
-                <Text style={styles.timerText}>{`0:${String(recordSeconds).padStart(2, '0')}`}</Text>
-                <View style={styles.waveWrap}>
-                  {waveform.map((h, i) => (
-                    <View
-                      key={`${i}-${h}`}
-                      style={[
-                        styles.waveBar,
-                        { height: h },
-                        !isRecording && hasVoiceClip && styles.waveBarRecorded,
-                      ]}
-                    />
-                  ))}
-                </View>
+                {voiceRecorder}
                 <Pressable
                   style={[styles.button, (!hasVoiceClip || saveProfileMutation.isPending) && styles.buttonDisabled]}
                   disabled={!hasVoiceClip || saveProfileMutation.isPending}
@@ -1238,6 +1559,15 @@ export default function ProfileTabScreen() {
                     {saveProfileMutation.isPending ? 'Finishing...' : 'Finish setup'}
                   </Text>
                 </Pressable>
+                {/* Voice intro is optional — never block onboarding on microphone access. */}
+                {!pendingVoiceUri ? (
+                  <Pressable
+                    style={[styles.button, styles.secondaryButton, (saveProfileMutation.isPending || isRecording) && styles.buttonDisabled]}
+                    disabled={saveProfileMutation.isPending || isRecording}
+                    onPress={() => saveProfileMutation.mutate(false)}>
+                    <Text style={styles.secondaryButtonText}>Skip for now</Text>
+                  </Pressable>
+                ) : null}
               </View>
             )}
 
@@ -1252,6 +1582,8 @@ export default function ProfileTabScreen() {
                   style={styles.button}
                   onPress={() => {
                     setShowCompletionStep(false);
+                    // Ask for notifications now that there's something to be notified about.
+                    void registerForPushNotifications({ prompt: true });
                     router.replace('/(tabs)/discover');
                   }}>
                   <Text style={styles.buttonText}>Start discovering</Text>
@@ -1911,5 +2243,76 @@ const styles = StyleSheet.create({
     color: '#d9dcf2',
     fontWeight: '700',
     fontSize: 17,
+  },
+  dangerButton: {
+    backgroundColor: 'rgba(255,59,48,0.10)',
+    borderColor: 'rgba(255,107,96,0.45)',
+    marginTop: 20,
+  },
+  dangerButtonText: {
+    color: '#ff8a80',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  legalLinksRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 18,
+    marginTop: 18,
+    marginBottom: 8,
+  },
+  legalLinkText: {
+    color: '#9aa1c0',
+    fontSize: 13,
+    textDecorationLine: 'underline',
+  },
+  termsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginTop: 6,
+    marginBottom: 6,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  checkboxChecked: {
+    backgroundColor: '#ff6b35',
+    borderColor: '#ff6b35',
+  },
+  checkboxTick: {
+    color: '#111524',
+    fontWeight: '800',
+    fontSize: 14,
+  },
+  termsText: {
+    flex: 1,
+    color: '#c6cbe2',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  termsLink: {
+    color: '#ffb08f',
+    textDecorationLine: 'underline',
+  },
+  appleButton: {
+    height: 48,
+    marginTop: 12,
+  },
+  reviewBlock: {
+    marginTop: 16,
+    gap: 8,
+  },
+  reviewLink: {
+    alignSelf: 'center',
+    marginTop: 18,
+    paddingVertical: 6,
   },
 });

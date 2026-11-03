@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { applyAutoHold, notifyModerators } from '../../shared/moderation/actions.js';
 
 const REPORT_REASONS = ['inappropriate_content', 'harassment', 'fake_profile', 'spam', 'underage', 'other'];
 
@@ -63,7 +64,9 @@ const moderationRoutes: FastifyPluginAsync = async (fastify) => {
     };
   });
 
-  fastify.post<{ Body: { userId: string; reason: string; details?: string } }>(
+  fastify.post<{
+    Body: { userId: string; reason: string; details?: string; messageId?: string; roomMessageId?: string };
+  }>(
     '/report',
     {
       preHandler: [fastify.authenticate],
@@ -76,21 +79,54 @@ const moderationRoutes: FastifyPluginAsync = async (fastify) => {
             userId: { type: 'string', minLength: 1, maxLength: 36 },
             reason: { type: 'string', enum: REPORT_REASONS },
             details: { type: 'string', maxLength: 1000 },
+            messageId: { type: 'string', minLength: 1, maxLength: 36 },
+            roomMessageId: { type: 'string', minLength: 1, maxLength: 36 },
           },
         },
       },
     },
     async (req, reply) => {
       const reporterId = req.user.sub;
-      const { userId: reportedId, reason, details } = req.body;
+      const { userId: reportedId, reason, details, messageId, roomMessageId } = req.body;
 
       if (reportedId === reporterId) {
         return reply.code(400).send({ ok: false, message: 'Cannot report yourself' });
       }
 
-      await prisma.report.create({
-        data: { reporterId, reportedId, reason, details: details ?? null },
+      const reported = await prisma.user.findUnique({ where: { id: reportedId }, select: { id: true } });
+      if (!reported) return reply.code(404).send({ ok: false, message: 'User not found' });
+
+      // Snapshot the reported content server-side so moderators see exactly what
+      // was sent (and it survives the sender deleting it). Only messages the
+      // reporter could actually see, written by the reported user, are accepted.
+      let evidence: string | null = null;
+      if (messageId) {
+        const message = await prisma.message.findFirst({
+          where: { id: messageId, senderId: reportedId, recipientId: reporterId },
+        });
+        if (message) {
+          evidence = `[direct ${message.type} ${message.createdAt.toISOString()}] ${message.content ?? ''} ${message.mediaUrl ?? ''}`.trim();
+        }
+      } else if (roomMessageId) {
+        const message = await prisma.roomMessage.findFirst({
+          where: { id: roomMessageId, userId: reportedId },
+          include: { room: { select: { name: true } } },
+        });
+        if (message) {
+          evidence = `[room "${message.room.name}" ${message.createdAt.toISOString()}] ${message.content}`;
+        }
+      }
+
+      const report = await prisma.report.create({
+        data: { reporterId, reportedId, reason, details: details ?? null, evidence },
       });
+
+      const held = await applyAutoHold(reportedId, reason);
+      void notifyModerators(
+        `${reason === 'underage' ? '🚨 URGENT ' : ''}New report (${reason}) against user ${reportedId}` +
+          `${held ? ' — user auto-held pending review' : ''}. Report ${report.id}.` +
+          `${evidence ? `\nEvidence: ${evidence.slice(0, 500)}` : ''}`
+      );
 
       return { ok: true };
     }

@@ -1,7 +1,8 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -14,6 +15,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
+import { ReportSheet, type ReportTarget } from '@/components/report-sheet';
+import { blockUser, getBlockedUsers } from '@/lib/moderation-api';
 import { getRoomMessages, sendRoomMessage, type RoomMessage } from '@/lib/rooms-api';
 import { getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
@@ -49,7 +52,50 @@ export default function RoomChatScreen() {
     staleTime: 5_000,
   });
 
-  const messages = messagesQuery.data ?? [];
+  const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null);
+
+  // Live messages arrive over the socket broadcast, so hide blocked users here too
+  // (the history endpoint already filters them server-side).
+  const blockedQuery = useQuery({
+    queryKey: ['blocked-users'],
+    queryFn: getBlockedUsers,
+    enabled: Boolean(accessToken),
+    staleTime: 60_000,
+  });
+  const blockedIds = new Set((blockedQuery.data ?? []).map((item) => item.userId));
+  const messages = (messagesQuery.data ?? []).filter((msg) => !blockedIds.has(msg.userId));
+
+  const blockMutation = useMutation({
+    mutationFn: (userId: string) => blockUser(userId),
+    onSuccess: (_data, userId) => {
+      queryClient.setQueryData<RoomMessage[]>(['room-messages', roomId], (prev) =>
+        (prev ?? []).filter((m) => m.userId !== userId)
+      );
+      queryClient.invalidateQueries({ queryKey: ['blocked-users'] });
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      Alert.alert('User blocked', "You won't see their messages anymore.");
+    },
+    onError: (error) => Alert.alert('Could not block user', error instanceof Error ? error.message : 'Try again'),
+  });
+
+  // Alert is limited to 3 buttons on Android — keep this menu at 3.
+  const handleMessageLongPress = (msg: RoomMessage) =>
+    Alert.alert(msg.senderName, undefined, [
+      {
+        text: 'Report message',
+        onPress: () => setReportTarget({ userId: msg.userId, name: msg.senderName, roomMessageId: msg.id }),
+      },
+      {
+        text: 'Block user',
+        style: 'destructive',
+        onPress: () =>
+          Alert.alert(`Block ${msg.senderName}?`, "You won't see each other in Discover, Chats or Rooms anymore.", [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Block', style: 'destructive', onPress: () => blockMutation.mutate(msg.userId) },
+          ]),
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
 
   // Join the socket room channel and listen for new messages
   useEffect(() => {
@@ -106,12 +152,14 @@ export default function RoomChatScreen() {
       queryClient.setQueryData<RoomMessage[]>(['room-messages', roomId], (prev) =>
         (prev ?? []).map((m) => (m.id === tempId ? saved : m))
       );
-    } catch {
+    } catch (error) {
       // rollback optimistic
       queryClient.setQueryData<RoomMessage[]>(['room-messages', roomId], (prev) =>
         (prev ?? []).filter((m) => m.id !== tempId)
       );
       setDraft(text);
+      // e.g. blocked by the content filter, or account under review
+      Alert.alert('Message not sent', error instanceof Error ? error.message : 'Try again');
     } finally {
       setSending(false);
     }
@@ -121,6 +169,7 @@ export default function RoomChatScreen() {
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <Stack.Screen options={{ headerShown: false }} />
       <LiquidBackdrop dimmerOpacity={0.72} />
+      <ReportSheet target={reportTarget} onClose={() => setReportTarget(null)} />
 
       {/* Header */}
       <View style={styles.header}>
@@ -157,7 +206,11 @@ export default function RoomChatScreen() {
             messages.map((msg) => {
               const isMe = msg.userId === myUserId;
               return (
-                <View key={msg.id} style={[styles.messageRow, isMe && styles.messageRowRight]}>
+                <Pressable
+                  key={msg.id}
+                  style={[styles.messageRow, isMe && styles.messageRowRight]}
+                  onLongPress={isMe ? undefined : () => handleMessageLongPress(msg)}
+                  delayLongPress={350}>
                   {!isMe && (
                     <View style={styles.avatarBubble}>
                       <Text style={styles.avatarText}>{getInitial(msg.senderName)}</Text>
@@ -172,7 +225,7 @@ export default function RoomChatScreen() {
                       {formatTime(msg.createdAt)}
                     </Text>
                   </View>
-                </View>
+                </Pressable>
               );
             })
           )}

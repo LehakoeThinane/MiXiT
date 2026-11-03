@@ -23,6 +23,8 @@ type MeResponse = {
     id: string;
     email: string;
     phone: string | null;
+    appleId?: string | null;
+    googleId?: string | null;
     profile: {
       displayName: string;
       age: number;
@@ -32,10 +34,41 @@ type MeResponse = {
   } | null;
 };
 
-export async function googleSignIn(idToken: string) {
+export async function googleSignIn(idToken: string, acceptedTerms: boolean) {
   return apiRequest<AuthResponse>('/auth/google', {
     method: 'POST',
-    body: { idToken },
+    body: { idToken, acceptedTerms },
+  });
+}
+
+export async function appleSignIn(identityToken: string, acceptedTerms: boolean) {
+  return apiRequest<AuthResponse>('/auth/apple', {
+    method: 'POST',
+    body: { identityToken, acceptedTerms },
+  });
+}
+
+/** Demo account for App Store / Google Play review teams. */
+export async function reviewSignIn(email: string, password: string) {
+  return apiRequest<AuthResponse>('/auth/review', {
+    method: 'POST',
+    body: { email, password },
+  });
+}
+
+/** Revokes the refresh session server-side. Never throws — logout must always succeed locally. */
+export async function logoutSession(refreshToken: string | null) {
+  if (!refreshToken) return;
+  await apiRequest('/auth/logout', { method: 'POST', body: { refreshToken } }).catch(() => undefined);
+}
+
+/** Permanently deletes the account and all its data. */
+export async function deleteAccount(appleAuthorizationCode?: string) {
+  await apiRequest('/auth/me', {
+    method: 'DELETE',
+    auth: true,
+    body: appleAuthorizationCode ? { appleAuthorizationCode } : {},
+    timeoutMs: 45_000,
   });
 }
 

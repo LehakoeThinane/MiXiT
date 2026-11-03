@@ -1,15 +1,22 @@
-import { Prisma } from '@prisma/client';
+import crypto from 'node:crypto';
+
+import { Prisma, type User } from '@prisma/client';
 import { OAuth2Client } from 'google-auth-library';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
 import { env } from '../../shared/config/env.js';
 import { logger } from '../../shared/utils/logger.js';
+import { revokeAppleAuthorization, verifyAppleIdentityToken } from '../../shared/auth/apple.js';
 import { hashToken, signAccessToken, signRefreshToken, verifyRefreshToken } from '../../shared/auth/jwt.js';
+import { invalidateProfileCache } from '../../shared/cache/profile-cache.js';
+import { deleteUserStorage } from '../../shared/storage/supabase-storage.js';
 
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-type GoogleSignInBody = { idToken: string };
+type GoogleSignInBody = { idToken: string; acceptedTerms?: boolean };
+type AppleSignInBody = { identityToken: string; acceptedTerms?: boolean };
+type DeleteAccountBody = { appleAuthorizationCode?: string };
 type UpdatePhoneBody = { phone: string };
 type RefreshBody = { refreshToken: string };
 type LogoutBody = { refreshToken: string };
@@ -18,7 +25,28 @@ const googleSignInSchema = {
   body: {
     type: 'object',
     required: ['idToken'],
-    properties: { idToken: { type: 'string', minLength: 16 } },
+    properties: {
+      idToken: { type: 'string', minLength: 16 },
+      acceptedTerms: { type: 'boolean' },
+    },
+  },
+} as const;
+
+const appleSignInSchema = {
+  body: {
+    type: 'object',
+    required: ['identityToken'],
+    properties: {
+      identityToken: { type: 'string', minLength: 16, maxLength: 4096 },
+      acceptedTerms: { type: 'boolean' },
+    },
+  },
+} as const;
+
+const deleteAccountSchema = {
+  body: {
+    type: 'object',
+    properties: { appleAuthorizationCode: { type: 'string', minLength: 8, maxLength: 1024 } },
   },
 } as const;
 
@@ -67,6 +95,91 @@ function isUniqueConstraintError(error: unknown): error is Prisma.PrismaClientKn
 // each mint ID tokens with a different `aud` claim from the same Google Cloud project.
 const googleClient = new OAuth2Client();
 
+type ResolveUserResult =
+  | { ok: true; user: User }
+  | { ok: false; status: number; message: string };
+
+/**
+ * Finds or creates the user for a verified Google/Apple identity. Accounts are
+ * linked by verified email, so someone who signed up with Google on Android and
+ * later uses Sign in with Apple on iOS (sharing their real email) lands on the
+ * same account. New accounts require Terms/Privacy acceptance.
+ */
+async function resolveUser(input: Parameters<typeof findOrCreateUser>[0]): Promise<ResolveUserResult> {
+  const result = await findOrCreateUser(input);
+  if (result.ok && result.user.bannedAt) {
+    return {
+      ok: false,
+      status: 403,
+      message: `Your account has been suspended. Contact ${env.supportEmail} if you think this is a mistake.`,
+    };
+  }
+  return result;
+}
+
+async function findOrCreateUser(input: {
+  provider: 'google' | 'apple';
+  providerId: string;
+  email: string | null;
+  acceptedTerms: boolean;
+}): Promise<ResolveUserResult> {
+  const { provider, providerId, email, acceptedTerms } = input;
+  const byProvider = provider === 'google' ? { googleId: providerId } : { appleId: providerId };
+  const termsUpdate = acceptedTerms ? { termsAcceptedAt: new Date() } : {};
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const existing = await prisma.user.findUnique({ where: byProvider });
+      if (existing) {
+        const data: Prisma.UserUpdateInput = {};
+        if (email && email !== existing.email) data.email = email;
+        if (acceptedTerms && !existing.termsAcceptedAt) data.termsAcceptedAt = new Date();
+        if (Object.keys(data).length === 0) return { ok: true, user: existing };
+        try {
+          return { ok: true, user: await prisma.user.update({ where: { id: existing.id }, data }) };
+        } catch (error) {
+          // Email now belongs to another account — keep the old one rather than failing sign-in.
+          if (isUniqueConstraintError(error)) return { ok: true, user: existing };
+          throw error;
+        }
+      }
+
+      if (!email) {
+        return {
+          ok: false,
+          status: 400,
+          message: 'We could not get an email address from your sign-in. Please try again and share your email.',
+        };
+      }
+
+      const byEmail = await prisma.user.findUnique({ where: { email } });
+      if (byEmail) {
+        const linkedId = provider === 'google' ? byEmail.googleId : byEmail.appleId;
+        if (linkedId && linkedId !== providerId) {
+          return { ok: false, status: 409, message: 'Email already in use by another account' };
+        }
+        const user = await prisma.user.update({
+          where: { id: byEmail.id },
+          data: { ...byProvider, ...(byEmail.termsAcceptedAt ? {} : termsUpdate) },
+        });
+        return { ok: true, user };
+      }
+
+      if (!acceptedTerms) {
+        return { ok: false, status: 400, message: 'Please accept the Terms of Use and Privacy Policy to continue.' };
+      }
+
+      const user = await prisma.user.create({ data: { ...byProvider, email, ...termsUpdate } });
+      return { ok: true, user };
+    } catch (error) {
+      // Double-tap / concurrent retry raced us to create the row — loop once to read it back.
+      if (isUniqueConstraintError(error) && attempt === 0) continue;
+      throw error;
+    }
+  }
+  return { ok: false, status: 409, message: 'Could not complete sign-in, please try again' };
+}
+
 async function issueTokens(userId: string, email: string, req: FastifyRequest) {
   const accessToken = signAccessToken(userId, email);
   const refreshToken = signRefreshToken(userId);
@@ -111,25 +224,15 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(401).send({ ok: false, message: 'Invalid Google sign-in' });
       }
 
-      const googleId = payload.sub;
-      const email = payload.email;
+      const result = await resolveUser({
+        provider: 'google',
+        providerId: payload.sub,
+        email: payload.email,
+        acceptedTerms: req.body.acceptedTerms === true,
+      });
+      if (!result.ok) return reply.code(result.status).send({ ok: false, message: result.message });
 
-      let user;
-      try {
-        // Upsert, not find-then-create — a double-tap or client retry racing two
-        // concurrent requests would otherwise hit an unhandled unique-constraint 500.
-        user = await prisma.user.upsert({
-          where: { googleId },
-          update: { email },
-          create: { googleId, email },
-        });
-      } catch (error) {
-        if (isUniqueConstraintError(error)) {
-          return reply.code(409).send({ ok: false, message: 'Email already in use by another account' });
-        }
-        throw error;
-      }
-
+      const user = result.user;
       logger.info('User signed in via Google', { userId: user.id });
 
       return {
@@ -137,6 +240,125 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         user: { id: user.id, email: user.email, phone: user.phone },
         tokens: await issueTokens(user.id, user.email, req),
       };
+    }
+  );
+
+  // ---- Sign in with Apple (required on iOS alongside Google — guideline 4.8) ----
+  fastify.post<{ Body: AppleSignInBody }>(
+    '/apple',
+    {
+      schema: appleSignInSchema,
+      config: { rateLimit: { max: 20, timeWindow: '15 minutes' } },
+    },
+    async (req, reply) => {
+      let identity;
+      try {
+        identity = await verifyAppleIdentityToken(req.body.identityToken);
+      } catch (error) {
+        req.log.warn({ err: error }, 'Apple identity token rejected');
+        return reply.code(401).send({ ok: false, message: 'Invalid Apple sign-in' });
+      }
+
+      const result = await resolveUser({
+        provider: 'apple',
+        providerId: identity.sub,
+        // Apple relay addresses (@privaterelay.appleid.com) are verified too.
+        email: identity.email && identity.emailVerified ? identity.email : null,
+        acceptedTerms: req.body.acceptedTerms === true,
+      });
+      if (!result.ok) return reply.code(result.status).send({ ok: false, message: result.message });
+
+      const user = result.user;
+      logger.info('User signed in via Apple', { userId: user.id });
+
+      return {
+        ok: true,
+        user: { id: user.id, email: user.email, phone: user.phone },
+        tokens: await issueTokens(user.id, user.email, req),
+      };
+    }
+  );
+
+  // ---- App-review demo account (disabled unless REVIEW_ACCOUNT_* are set) ----
+  // Store reviewers can't be expected to use a personal Google/Apple account, and
+  // both stores require working sign-in details for apps with a login.
+  fastify.post<{ Body: { email: string; password: string } }>(
+    '/review',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['email', 'password'],
+          properties: {
+            email: { type: 'string', minLength: 3, maxLength: 200 },
+            password: { type: 'string', minLength: 1, maxLength: 200 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
+    },
+    async (req, reply) => {
+      if (!env.reviewAccountEmail || !env.reviewAccountPassword) {
+        return reply.code(404).send({ ok: false, message: 'Not found' });
+      }
+      const emailOk = req.body.email.trim().toLowerCase() === env.reviewAccountEmail;
+      const given = Buffer.from(req.body.password);
+      const expected = Buffer.from(env.reviewAccountPassword);
+      const passwordOk = given.length === expected.length && crypto.timingSafeEqual(given, expected);
+      if (!emailOk || !passwordOk) {
+        return reply.code(401).send({ ok: false, message: 'Incorrect email or password' });
+      }
+
+      const user = await prisma.user.upsert({
+        where: { email: env.reviewAccountEmail },
+        update: {},
+        create: { email: env.reviewAccountEmail, termsAcceptedAt: new Date() },
+      });
+      if (user.bannedAt) return reply.code(403).send({ ok: false, message: 'Account suspended' });
+
+      logger.info('Review account signed in', { userId: user.id });
+      return {
+        ok: true,
+        user: { id: user.id, email: user.email, phone: user.phone },
+        tokens: await issueTokens(user.id, user.email, req),
+      };
+    }
+  );
+
+  // ---- Permanently delete the account and all associated data ----
+  // App Store 5.1.1(v) / Google Play account-deletion policy. Every user-owned row
+  // cascades from `users` (profile, messages, vibes, rooms, purchases, sessions,
+  // blocks, reports); uploaded media is removed from storage first.
+  fastify.delete<{ Body: DeleteAccountBody }>(
+    '/me',
+    {
+      preHandler: [fastify.authenticate],
+      schema: deleteAccountSchema,
+      config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
+    },
+    async (req, reply) => {
+      const userId = req.user.sub;
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user) return reply.code(404).send({ ok: false, message: 'Account not found' });
+
+      try {
+        await deleteUserStorage(userId);
+      } catch (error) {
+        // Don't block deletion on storage hiccups — orphaned objects are unreachable
+        // without the DB rows that reference them, but log so they can be swept.
+        req.log.error({ err: error, userId }, 'Account deletion: storage cleanup failed');
+      }
+
+      let appleRevoked = false;
+      if (user.appleId && req.body?.appleAuthorizationCode) {
+        appleRevoked = await revokeAppleAuthorization(req.body.appleAuthorizationCode);
+      }
+
+      await prisma.user.delete({ where: { id: userId } });
+      await invalidateProfileCache(userId).catch(() => {});
+
+      logger.info('Account deleted', { userId, appleRevoked });
+      return { ok: true };
     }
   );
 
@@ -210,7 +432,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         }
 
         const user = await prisma.user.findUnique({ where: { id: payload.sub } });
-        if (!user) {
+        if (!user || user.bannedAt) {
           return reply.code(401).send({ ok: false, message: 'User not found' });
         }
 

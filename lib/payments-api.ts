@@ -9,6 +9,7 @@ export type Product = {
   priceInCents: number;
   currency: string;
   type: 'subscription' | 'boost' | 'feature';
+  storeProductId: string | null;
 };
 
 export type Purchase = {
@@ -16,6 +17,7 @@ export type Purchase = {
   productSlug: string;
   productName: string;
   productType: string;
+  source: 'store' | 'payfast';
   status: 'pending' | 'active' | 'failed' | 'expired' | 'cancelled';
   price: string;
   expiresAt: string | null;

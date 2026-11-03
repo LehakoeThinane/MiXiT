@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:
@@ -15,12 +15,13 @@ permissions:
   contents: read
 
 env:
+  # Expo SDK 54 requires Node >= 20.19.4; the backend Docker image runs node:20.
   NODE_VERSION: '20'
   PNPM_VERSION: '9'
 
 jobs:
   app:
-    name: App (typecheck + lint)
+    name: App (deps check + typecheck + lint)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +37,17 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Native module versions must match the Expo SDK or EAS builds fail/crash.
+      - name: Check Expo SDK dependency versions
+        run: pnpm exec expo install --check
+        env:
+          CI: '1'
+
+      - name: Validate app config
+        run: pnpm exec expo config --type public --json > /dev/null
+        env:
+          CI: '1'
 
       - name: Typecheck
         run: pnpm exec tsc --noEmit -p tsconfig.json
@@ -88,5 +100,26 @@ jobs:
       - name: Apply migrations to a fresh database
         run: pnpm exec prisma migrate deploy
 
+      # Fails if schema.prisma has changes with no migration (or vice versa):
+      # compares the freshly migrated database against the Prisma schema.
+      - name: Check schema and migrations are in sync
+        run: >-
+          pnpm exec prisma migrate diff
+          --from-url "$DATABASE_URL"
+          --to-schema-datamodel prisma/schema.prisma
+          --exit-code
+
       - name: Build (prisma generate + typecheck)
         run: pnpm run build
+
+  backend-image:
+    name: Backend Docker image (deploy build)
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same Dockerfile Railway deploys (backend/railway.toml) — catches broken
+      # production builds before they reach the host.
+      - name: Build production image
+        run: docker build -f backend/Dockerfile -t mixit-api:ci backend

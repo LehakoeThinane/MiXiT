@@ -1,6 +1,9 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
+import { visibleUserFilter } from '../../shared/moderation/actions.js';
+import { getBlockedUserIds } from '../../shared/moderation/blocks.js';
+import { checkText, FILTERED_MESSAGE } from '../../shared/moderation/content-filter.js';
 import { getSocketServer } from '../../shared/realtime/socket.js';
 
 const defaultRooms = [
@@ -100,9 +103,12 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
     const room = await prisma.room.findUnique({ where: { id: roomId }, select: { id: true } });
     if (!room) return reply.code(404).send({ ok: false, message: 'Room not found' });
 
+    const blockedUserIds = await getBlockedUserIds(req.user.sub);
     const messages = await prisma.roomMessage.findMany({
       where: {
         roomId,
+        userId: { notIn: Array.from(blockedUserIds) },
+        user: visibleUserFilter,
         ...(before ? { createdAt: { lt: before } } : {}),
       },
       include: {
@@ -149,6 +155,12 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
     const { roomId } = req.params;
     const { content } = req.body ?? {};
     if (!content?.trim()) return reply.code(400).send({ ok: false, message: 'content required' });
+    if (!checkText(content).ok) return reply.code(422).send({ ok: false, message: FILTERED_MESSAGE });
+
+    const sender = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { heldAt: true } });
+    if (sender?.heldAt) {
+      return reply.code(403).send({ ok: false, message: 'Your account is under review. You can post in rooms again once it has been checked.' });
+    }
 
     const room = await prisma.room.findUnique({ where: { id: roomId }, select: { id: true } });
     if (!room) return reply.code(404).send({ ok: false, message: 'Room not found' });
