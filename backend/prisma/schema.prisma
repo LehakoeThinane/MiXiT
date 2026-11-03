@@ -12,7 +12,13 @@ model User {
   id             String           @id @default(uuid())
   phone          String?          @unique
   email          String           @unique
-  googleId       String           @unique @map("google_id")
+  googleId       String?          @unique @map("google_id")
+  appleId        String?          @unique @map("apple_id")
+  termsAcceptedAt DateTime?       @map("terms_accepted_at")
+  // Moderation: bannedAt = suspended (cannot sign in, content removed); heldAt =
+  // hidden from Discover/rooms pending review (e.g. reported as underage).
+  bannedAt       DateTime?        @map("banned_at")
+  heldAt         DateTime?        @map("held_at")
   createdAt      DateTime         @default(now()) @map("created_at")
   profile        Profile?
   sent           Message[]        @relation("sent_messages")
@@ -51,6 +57,10 @@ model Report {
   reportedId String   @map("reported_id")
   reason     String
   details    String?
+  // Server-captured snapshot of the reported message (never client-supplied text).
+  evidence   String?
+  reviewedAt DateTime? @map("reviewed_at")
+  resolution String?
   status     String   @default("open") // open | reviewed | dismissed
   createdAt  DateTime @default(now()) @map("created_at")
 

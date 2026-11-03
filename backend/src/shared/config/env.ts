@@ -103,8 +103,38 @@ export const env = {
     | 'sandbox',
   sentryDsn: process.env.SENTRY_DSN?.trim() ?? '',
   googleClientIds: parseGoogleClientIds(process.env.GOOGLE_CLIENT_IDS),
+  // Sign in with Apple — `aud` of identity tokens minted for the native iOS app is
+  // the bundle identifier. Comma-separated so a Services ID can be added for web later.
+  appleClientIds: parseGoogleClientIds(process.env.APPLE_CLIENT_IDS ?? 'com.mixit.app'),
+  // Optional: enables revoking Apple tokens on account deletion (Apple requirement for
+  // apps offering Sign in with Apple). Key from Apple Developer > Keys (Sign in with Apple).
+  appleTeamId: process.env.APPLE_TEAM_ID?.trim() ?? '',
+  appleKeyId: process.env.APPLE_KEY_ID?.trim() ?? '',
+  applePrivateKey: (process.env.APPLE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n').trim(),
+  // RevenueCat webhook — the exact value configured as the webhook "Authorization header"
+  // in the RevenueCat dashboard. Empty = webhook disabled (returns 503).
+  revenuecatWebhookAuth: process.env.REVENUECAT_WEBHOOK_AUTH?.trim() ?? '',
+  // Moderation: admin API key for /admin/* (empty = admin API disabled) and an
+  // optional Slack/Discord-compatible webhook that is pinged for every new report.
+  adminApiKey: process.env.ADMIN_API_KEY?.trim() ?? '',
+  moderationWebhookUrl: process.env.MODERATION_WEBHOOK_URL?.trim() ?? '',
+  // Optional demo account for App Store / Play review teams (entered in "App access"
+  // / "Sign-in information"). Both empty = reviewer sign-in disabled.
+  reviewAccountEmail: process.env.REVIEW_ACCOUNT_EMAIL?.trim().toLowerCase() ?? '',
+  reviewAccountPassword: process.env.REVIEW_ACCOUNT_PASSWORD?.trim() ?? '',
+  // Shown on the public legal/support pages and used as the contact address.
+  legalEntityName: process.env.LEGAL_ENTITY_NAME?.trim() || 'MiXiT',
+  supportEmail: process.env.SUPPORT_EMAIL?.trim() || 'support@mixit.app',
 };
 
 if (nodeEnv === 'production' && env.payfastMode === 'live' && (!env.payfastMerchantId || !env.payfastMerchantKey)) {
   throw new Error('PAYFAST_MERCHANT_ID and PAYFAST_MERCHANT_KEY are required when PAYFAST_MODE=live in production');
+}
+
+if (env.adminApiKey && env.adminApiKey.length < 32) {
+  throw new Error('ADMIN_API_KEY must be at least 32 characters (e.g. openssl rand -hex 32)');
+}
+
+if (env.reviewAccountEmail && env.reviewAccountPassword.length < 16) {
+  throw new Error('REVIEW_ACCOUNT_PASSWORD must be at least 16 characters when REVIEW_ACCOUNT_EMAIL is set');
 }

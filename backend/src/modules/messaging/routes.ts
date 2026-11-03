@@ -1,8 +1,8 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
-import { getBlockedUserIds, isBlockedPair } from '../../shared/moderation/blocks.js';
-import { sendPushNotification } from '../../shared/push/expo-push.js';
+import { sendDirectMessage, toClientMessages } from '../../shared/messaging/direct-messages.js';
+import { getBlockedUserIds } from '../../shared/moderation/blocks.js';
 import { getSocketServer } from '../../shared/realtime/socket.js';
 import { createSignedChatMediaUrl } from '../../shared/storage/supabase-storage.js';
 
@@ -31,7 +31,10 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
           required: ['filename', 'mimeType'],
           properties: {
             filename: { type: 'string', minLength: 1, maxLength: 255 },
-            mimeType: { type: 'string', minLength: 1, maxLength: 100 },
+            mimeType: {
+              type: 'string',
+              enum: ['image/jpeg', 'image/png', 'image/webp', 'audio/m4a', 'audio/x-m4a', 'audio/mp4', 'audio/mpeg', 'audio/aac'],
+            },
           },
         },
       },
@@ -88,7 +91,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       const peer = isMine ? message.recipient : message.sender;
       const peerProfile = peer.profile;
 
-      if (seenPeerIds.has(peer.id) || blockedUserIds.has(peer.id)) continue;
+      if (seenPeerIds.has(peer.id) || blockedUserIds.has(peer.id) || peer.bannedAt) continue;
       seenPeerIds.add(peer.id);
 
       conversations.push({
@@ -145,19 +148,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       io?.to(`user:${peerUserId}`).emit('message:read', { byUserId: currentUserId, messageIds: unreadIds });
     }
 
-    return {
-      ok: true,
-      messages: messages.map((message) => ({
-        id: message.id,
-        senderId: message.senderId,
-        recipientId: message.recipientId,
-        content: message.content,
-        type: message.type,
-        mediaUrl: message.mediaUrl,
-        readAt: message.readAt?.toISOString() ?? null,
-        createdAt: message.createdAt.toISOString(),
-      })),
-    };
+    return { ok: true, messages: await toClientMessages(messages) };
   });
 
   fastify.post<{
@@ -181,59 +172,11 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (req, reply) => {
-    const senderId = req.user.sub;
-    const { recipientId, content, type = 'text', mediaUrl } = req.body;
-
-    if (!recipientId || recipientId === senderId) {
-      return reply.code(400).send({ ok: false, message: 'Invalid recipient' });
+      const result = await sendDirectMessage(req.user.sub, req.body);
+      if (!result.ok) return reply.code(result.status).send({ ok: false, message: result.message });
+      return { ok: true, message: result.message };
     }
-    if (!content && !mediaUrl) {
-      return reply.code(400).send({ ok: false, message: 'Message content is required' });
-    }
-
-    const recipient = await prisma.user.findUnique({ where: { id: recipientId }, select: { id: true } });
-    if (!recipient) {
-      return reply.code(404).send({ ok: false, message: 'Recipient not found' });
-    }
-
-    if (await isBlockedPair(senderId, recipientId)) {
-      return reply.code(403).send({ ok: false, message: 'Cannot message this user' });
-    }
-
-    const message = await prisma.message.create({
-      data: {
-        senderId,
-        recipientId,
-        content: content ?? null,
-        mediaUrl: mediaUrl ?? null,
-        type,
-      },
-    });
-
-    const payload = {
-      id: message.id,
-      senderId: message.senderId,
-      recipientId: message.recipientId,
-      content: message.content,
-      type: message.type,
-      mediaUrl: message.mediaUrl,
-      readAt: null as string | null,
-      createdAt: message.createdAt.toISOString(),
-    };
-
-    const io = getSocketServer();
-    io?.to(`user:${recipientId}`).emit('message:received', payload);
-    io?.to(`user:${senderId}`).emit('message:sent', payload);
-
-    const [senderProfile, recipientProfile] = await Promise.all([
-      prisma.profile.findUnique({ where: { userId: senderId }, select: { displayName: true } }),
-      prisma.profile.findUnique({ where: { userId: recipientId }, select: { pushToken: true } }),
-    ]);
-    const preview = type === 'voice' ? 'Sent a voice note' : type === 'image' ? 'Sent a photo' : (content ?? '').slice(0, 100);
-    sendPushNotification(recipientProfile?.pushToken, senderProfile?.displayName ?? 'Someone', preview, { type: 'message', senderId }).catch(() => {});
-
-    return { ok: true, message: payload };
-  });
+  );
 };
 
 export default messagingRoutes;

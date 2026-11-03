@@ -6,8 +6,8 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import { extractBearerToken, verifyAccessToken } from '../auth/jwt.js';
 import { env } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
-import { isBlockedPair } from '../moderation/blocks.js';
-import { sendPushNotification } from '../push/expo-push.js';
+import { isUserBanned } from '../moderation/actions.js';
+import { sendDirectMessage } from '../messaging/direct-messages.js';
 import { logger } from '../utils/logger.js';
 
 let io: Server | null = null;
@@ -61,6 +61,7 @@ export async function initSocketServer(app: FastifyInstance) {
       if (!token) return next(new Error('Unauthorized'));
 
       const authUser = verifyAccessToken(token);
+      if (await isUserBanned(authUser.sub)) return next(new Error('Account suspended'));
       socket.data.userId = authUser.sub;
       next();
     } catch {
@@ -91,45 +92,14 @@ export async function initSocketServer(app: FastifyInstance) {
     });
 
     socket.on('message:send', async (payload: { recipientId: string; content?: string; type?: string; mediaUrl?: string }) => {
-      if (!payload?.recipientId || payload.recipientId === userId) return;
-      if (!payload.content && !payload.mediaUrl) return;
-      if (payload.content && payload.content.length > 4000) return;
-
-      const type = payload.type ?? 'text';
-      if (!['text', 'voice', 'image'].includes(type)) return;
-
-      const recipientExists = await prisma.user.findUnique({ where: { id: payload.recipientId }, select: { id: true } });
-      if (!recipientExists) return;
-
-      if (await isBlockedPair(userId, payload.recipientId)) return;
-
-      const message = await prisma.message.create({
-        data: {
-          senderId: userId,
-          recipientId: payload.recipientId,
-          content: payload.content ?? null,
-          mediaUrl: payload.mediaUrl ?? null,
-          type,
-        },
-      });
-
-      io?.to(`user:${payload.recipientId}`).emit('message:received', {
-        id: message.id,
-        senderId: message.senderId,
-        recipientId: message.recipientId,
-        content: message.content,
-        type: message.type,
-        mediaUrl: message.mediaUrl,
-        createdAt: message.createdAt.toISOString(),
-      });
-      socket.emit('message:delivered', { messageId: message.id });
-
-      const [senderProfile, recipientProfile] = await Promise.all([
-        prisma.profile.findUnique({ where: { userId }, select: { displayName: true } }),
-        prisma.profile.findUnique({ where: { userId: payload.recipientId }, select: { pushToken: true } }),
-      ]);
-      const preview = type === 'voice' ? 'Sent a voice note' : type === 'image' ? 'Sent a photo' : (payload.content ?? '').slice(0, 100);
-      sendPushNotification(recipientProfile?.pushToken, senderProfile?.displayName ?? 'Someone', preview, { type: 'message', senderId: userId }).catch(() => {});
+      if (!payload?.recipientId) return;
+      try {
+        const result = await sendDirectMessage(userId, payload);
+        if (result.ok) socket.emit('message:delivered', { messageId: result.message.id });
+        else socket.emit('message:error', { message: result.message });
+      } catch (error) {
+        logger.warn('Socket message:send failed', { error: String(error) });
+      }
     });
 
     socket.on('room:join', async ({ roomId }: { roomId: string }) => {

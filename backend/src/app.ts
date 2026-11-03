@@ -6,6 +6,8 @@ import * as Sentry from '@sentry/node';
 import Fastify from 'fastify';
 
 import authRoutes from './modules/auth/routes.js';
+import adminRoutes from './modules/admin/routes.js';
+import legalRoutes from './modules/legal/routes.js';
 import matchingRoutes from './modules/matching/routes.js';
 import messagingRoutes from './modules/messaging/routes.js';
 import moderationRoutes from './modules/moderation/routes.js';
@@ -18,6 +20,7 @@ import { env } from './shared/config/env.js';
 import { redis } from './shared/cache/redis.js';
 import { prisma } from './shared/db/prisma.js';
 import { requestIdMiddleware } from './shared/middleware/request-id.js';
+import { isUserBanned } from './shared/moderation/actions.js';
 import { initSocketServer, closeSocketServer } from './shared/realtime/socket.js';
 
 export function buildApp() {
@@ -65,6 +68,11 @@ export function buildApp() {
       reply.code(401).send({ ok: false, message: 'Unauthorized' });
       return;
     }
+
+    if (await isUserBanned(request.user.sub)) {
+      reply.code(403).send({ ok: false, code: 'account_suspended', message: 'Your account has been suspended.' });
+      return;
+    }
   });
 
   app.get('/health', async (_req, reply) => {
@@ -88,6 +96,8 @@ export function buildApp() {
   app.register(roomsRoutes, { prefix: '/rooms' });
   app.register(paymentRoutes, { prefix: '/payments' });
   app.register(moderationRoutes, { prefix: '/moderation' });
+  app.register(legalRoutes, { prefix: '/legal' });
+  app.register(adminRoutes, { prefix: '/admin' });
   app.register(async (instance) => {
     await initSocketServer(instance);
   });

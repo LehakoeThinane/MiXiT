@@ -1,19 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useState } from 'react';
 import { Alert, ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
-import { blockUser, reportUser, type ReportReason } from '@/lib/moderation-api';
+import { ReportSheet, type ReportTarget } from '@/components/report-sheet';
+import { blockUser } from '@/lib/moderation-api';
 import { getPeerProfile } from '@/lib/profile-api';
-
-const REPORT_REASONS: { reason: ReportReason; label: string }[] = [
-  { reason: 'inappropriate_content', label: 'Inappropriate content' },
-  { reason: 'harassment', label: 'Harassment' },
-  { reason: 'fake_profile', label: 'Fake profile' },
-  { reason: 'spam', label: 'Spam' },
-];
 
 export default function PeerProfileScreen() {
   const router = useRouter();
@@ -44,22 +39,13 @@ export default function PeerProfileScreen() {
     onError: (error) => Alert.alert('Could not block user', error instanceof Error ? error.message : 'Try again'),
   });
 
-  const reportMutation = useMutation({
-    mutationFn: (reason: ReportReason) => reportUser(userId, reason),
-    onSuccess: () => Alert.alert('Report submitted', 'Thanks — our team will review this.'),
-    onError: (error) => Alert.alert('Could not submit report', error instanceof Error ? error.message : 'Try again'),
-  });
+  const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null);
 
   const handleOptions = () => {
     Alert.alert('Profile options', undefined, [
       {
         text: 'Report user',
-        onPress: () =>
-          Alert.alert(
-            'Report this profile',
-            'Why are you reporting this user?',
-            REPORT_REASONS.map(({ reason, label }) => ({ text: label, onPress: () => reportMutation.mutate(reason) }))
-          ),
+        onPress: () => setReportTarget({ userId, name: profile?.displayName ?? fallbackName }),
       },
       {
         text: 'Block user',
@@ -77,6 +63,7 @@ export default function PeerProfileScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <LiquidBackdrop />
+      <ReportSheet target={reportTarget} onClose={() => setReportTarget(null)} />
       <Stack.Screen options={{ headerShown: false }} />
 
       <View style={styles.header}>

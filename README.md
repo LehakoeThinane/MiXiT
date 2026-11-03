@@ -117,3 +117,74 @@ This repo includes a Blueprint file at [`render.yaml`](./render.yaml) that creat
    - `EXPO_PUBLIC_API_URL=https://<your-api>.onrender.com`
 
 `preDeployCommand` runs `prisma migrate deploy` automatically on each deployment.
+
+## Store Release Setup (App Store + Google Play)
+
+Code-side compliance is in place (store billing, account deletion, Sign in with Apple,
+legal pages, moderation). These steps need your accounts/credentials:
+
+### In-app purchases (RevenueCat)
+1. Create products with exactly these IDs in **both** App Store Connect and the Play Console:
+   - `mixit_premium_monthly` — auto-renewable subscription, 1 month
+   - `mixit_vibe_boost` — consumable
+2. Create a RevenueCat project, connect both stores, and add to `eas.json` build env:
+   `EXPO_PUBLIC_REVENUECAT_IOS_KEY`, `EXPO_PUBLIC_REVENUECAT_ANDROID_KEY`.
+3. RevenueCat → Integrations → Webhooks: URL `https://<api>/payments/revenuecat/webhook`,
+   Authorization header = the backend's `REVENUECAT_WEBHOOK_AUTH`.
+
+PayFast (`/payments/subscribe`) is used by the **web** build only — Apple and Google
+require their own billing for digital goods in mobile apps.
+
+### Sign in with Apple
+Enable the capability for `com.mixit.app`, create a *Sign in with Apple* key and set
+`APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` (used to revoke tokens on account deletion).
+
+### Store listing URLs (served by the API)
+| Purpose | URL |
+|---|---|
+| Privacy policy | `https://<api>/legal/privacy` |
+| Terms of use / EULA | `https://<api>/legal/terms` |
+| Account deletion (Play Data safety) | `https://<api>/legal/delete-account` |
+| Child safety standards (Play) | `https://<api>/legal/child-safety` |
+| Support URL | `https://<api>/legal/support` |
+
+Set `LEGAL_ENTITY_NAME` and `SUPPORT_EMAIL`. The legal text is a draft — have it reviewed (POPIA).
+
+### Reviewer sign-in
+Set `REVIEW_ACCOUNT_EMAIL` / `REVIEW_ACCOUNT_PASSWORD` and give them to Apple (App Review
+Information) and Google (App access). Reviewers use "App reviewer? Sign in with email".
+
+### Moderation (required for UGC apps — act on reports within 24h)
+- Users can report/block from profiles, the chat ⋯ menu, and by long-pressing chat or room messages.
+- Text is checked against `backend/src/shared/moderation/content-filter.ts` (hate slurs,
+  child-exploitation terms, self-harm incitement).
+- "Underage" reports, or reports from 3+ different users in 7 days, automatically hide the
+  reported user until reviewed.
+- Set `MODERATION_WEBHOOK_URL` (Slack/Discord) to be pinged for every new report.
+- Set `ADMIN_API_KEY` and work the queue with header `x-admin-key`:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/admin/reports?status=open` | Report queue (underage first) with evidence |
+| GET | `/admin/users/:userId` | Profile, reports and room messages for a user |
+| POST | `/admin/reports/:id/resolve` | `{ "action": "dismiss" \| "warn" \| "hold" \| "ban", "note"? }` |
+| POST | `/admin/users/:userId/ban` · `/unban` · `/release` | Direct user actions |
+
+### Store console forms
+App privacy labels / Data safety (data collected: email, name, photos, voice, messages,
+precise location (optional), purchases, crash data — none used for tracking), content
+rating questionnaires (user interaction, dating → expect 18+), and iPhone/Android screenshots.
+
+## CI/CD
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `CI` (`.github/workflows/ci.yml`) | Push / PR to `main` or `dev` | **App:** Expo SDK version check, config validation, typecheck, lint. **Backend:** unit tests, migrations on a fresh Postgres, schema-vs-migrations drift check, build. **Docker:** builds the production image Railway deploys. |
+| `EAS Build` (`.github/workflows/eas-build.yml`) | Manual (Actions tab) or tag `v*` | Builds iOS/Android on EAS (`preview`/`production`/`development`), optionally auto-submits production builds to TestFlight / Play internal testing. Needs the `EXPO_TOKEN` repo secret. |
+
+**Backend deploys** are handled by Railway's GitHub integration (`backend/railway.toml`):
+it builds `backend/Dockerfile`, runs `prisma migrate deploy` before each release and
+health-checks `/health`. Point the Railway service at `main` so only reviewed code ships;
+work happens on `dev` and is merged to `main` via pull request once CI is green.
+
+**Release flow:** `dev` → PR → `main` (backend deploys) → tag `vX.Y.Z` → EAS production build.

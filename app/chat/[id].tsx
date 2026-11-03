@@ -8,6 +8,9 @@ import { Alert, Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView,
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
+import { ReportSheet, type ReportTarget } from '@/components/report-sheet';
+import { blockUser } from '@/lib/moderation-api';
+import { registerForPushNotifications } from '@/lib/notifications';
 import { getThreadMessages, requestMediaUploadUrl, sendMessage, type ThreadMessage, uploadMediaToStorage } from '@/lib/messaging-api';
 import { getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
@@ -38,6 +41,8 @@ export default function ChatScreen() {
   const typingTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingDot = useRef(new Animated.Value(0)).current;
   const scrollRef = useRef<ScrollView>(null);
+  const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null);
+  const askedForPushRef = useRef(false);
 
   const threadQuery = useQuery({
     queryKey: ['thread', peerUserId],
@@ -66,8 +71,49 @@ export default function ChatScreen() {
         return [...existing, message];
       });
       await queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      // Ask for notification permission in context — right after the first message sent.
+      if (!askedForPushRef.current) {
+        askedForPushRef.current = true;
+        void registerForPushNotifications({ prompt: true });
+      }
     },
+    onError: (error) => Alert.alert('Message not sent', error instanceof Error ? error.message : 'Try again'),
   });
+
+  const blockMutation = useMutation({
+    mutationFn: () => blockUser(peerUserId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      queryClient.invalidateQueries({ queryKey: ['blocked-users'] });
+      Alert.alert('User blocked', "You won't see each other anymore.");
+      router.back();
+    },
+    onError: (error) => Alert.alert('Could not block user', error instanceof Error ? error.message : 'Try again'),
+  });
+
+  const confirmBlock = () =>
+    Alert.alert(`Block ${peerName}?`, "You won't see each other in Discover, Chats, Rooms or Vibes anymore.", [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Block', style: 'destructive', onPress: () => blockMutation.mutate() },
+    ]);
+
+  // Alert is limited to 3 buttons on Android — keep these menus at 3.
+  const handleOptions = () =>
+    Alert.alert(peerName, undefined, [
+      { text: 'Report user', onPress: () => setReportTarget({ userId: peerUserId, name: peerName }) },
+      { text: 'Block user', style: 'destructive', onPress: confirmBlock },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+
+  const handleMessageLongPress = (message: ThreadMessage) =>
+    Alert.alert('Message', undefined, [
+      {
+        text: 'Report message',
+        onPress: () => setReportTarget({ userId: peerUserId, name: peerName, messageId: message.id }),
+      },
+      { text: 'Block user', style: 'destructive', onPress: confirmBlock },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
 
   useEffect(() => {
     if (!peerUserId) return;
@@ -225,9 +271,8 @@ export default function ChatScreen() {
   };
 
   const sendImageMessage = async () => {
-    const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!granted) return;
-
+    // No media-library permission needed: the system photo picker grants one-off
+    // access (Google Play photo/video permission policy).
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: true,
@@ -290,6 +335,7 @@ export default function ChatScreen() {
       <SafeAreaView style={styles.container}>
       <LiquidBackdrop />
       <Stack.Screen options={{ headerShown: false }} />
+      <ReportSheet target={reportTarget} onClose={() => setReportTarget(null)} />
 
       <View style={styles.header}>
         <Text style={styles.backButton} onPress={() => router.back()}>
@@ -311,6 +357,9 @@ export default function ChatScreen() {
             <Text style={styles.online}>{peerOnline ? '• online' : '• offline'}</Text>
           </View>
         </Pressable>
+        <Pressable onPress={handleOptions} style={styles.optionsButton} accessibilityLabel="Chat options">
+          <Text style={styles.optionsText}>⋯</Text>
+        </Pressable>
       </View>
 
       <ScrollView ref={scrollRef} contentContainerStyle={styles.messages}>
@@ -328,10 +377,15 @@ export default function ChatScreen() {
         {messages.map((message) => {
           const mine = message.senderId === user?.id;
           return (
-            <View key={message.id} style={[styles.messageWrap, mine ? styles.mineWrap : styles.theirWrap]}>
+            <Pressable
+              key={message.id}
+              style={[styles.messageWrap, mine ? styles.mineWrap : styles.theirWrap]}
+              onLongPress={mine ? undefined : () => handleMessageLongPress(message)}
+              delayLongPress={350}>
               {message.type === 'voice' ? (
                 <Pressable
                   style={[styles.voiceBubble, mine ? styles.mineVoice : styles.theirVoice]}
+                  onLongPress={mine ? undefined : () => handleMessageLongPress(message)}
                   onPress={() => togglePlayVoice(message)}>
                   <Text style={styles.voicePlay}>{playingId === message.id ? '⏸' : '▶'}</Text>
                   <View style={styles.voiceWave} />
@@ -360,7 +414,7 @@ export default function ChatScreen() {
                   </Text>
                 ) : null}
               </View>
-            </View>
+            </Pressable>
           );
         })}
       </ScrollView>
@@ -449,6 +503,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.14)',
+  },
+  optionsButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  optionsText: {
+    color: '#e0e4f5',
+    fontSize: 26,
   },
   headerProfile: {
     flex: 1,

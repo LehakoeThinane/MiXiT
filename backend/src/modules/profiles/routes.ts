@@ -2,7 +2,14 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
 import { getProfileCache, invalidateProfileCache, setProfileCache } from '../../shared/cache/profile-cache.js';
-import { createSignedUploadUrl } from '../../shared/storage/supabase-storage.js';
+import { visibleUserFilter } from '../../shared/moderation/actions.js';
+import { isBlockedPair } from '../../shared/moderation/blocks.js';
+import { checkText, FILTERED_MESSAGE } from '../../shared/moderation/content-filter.js';
+import {
+  createSignedUploadUrl,
+  createSignedVoiceIntroUploadUrl,
+  isOwnProfileMediaUrl,
+} from '../../shared/storage/supabase-storage.js';
 
 type UpsertProfileBody = {
   displayName: string;
@@ -104,6 +111,27 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
       schema: profileSchema,
     },
     async (req, reply) => {
+      const filterResult = checkText(
+        req.body.displayName,
+        req.body.bio,
+        req.body.city,
+        ...(req.body.interests ?? []),
+        ...(req.body.intents ?? []),
+        ...(req.body.traits ?? [])
+      );
+      if (!filterResult.ok) {
+        return reply.code(422).send({ ok: false, message: FILTERED_MESSAGE });
+      }
+
+      // Only accept media the user uploaded to their own folder — never arbitrary URLs.
+      const userId = req.user.sub;
+      if ((req.body.photos ?? []).some((url) => !isOwnProfileMediaUrl(url, userId))) {
+        return reply.code(400).send({ ok: false, message: 'Invalid photo' });
+      }
+      if (req.body.voiceIntroUrl && !isOwnProfileMediaUrl(req.body.voiceIntroUrl, userId)) {
+        return reply.code(400).send({ ok: false, message: 'Invalid voice intro' });
+      }
+
       if ((req.body.voiceIntroUrl && !req.body.voiceIntroDurationSec) || (!req.body.voiceIntroUrl && req.body.voiceIntroDurationSec)) {
         return reply.code(400).send({
           ok: false,
@@ -181,8 +209,12 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
     { preHandler: [fastify.authenticate] },
     async (req, reply) => {
       const { userId } = req.params;
-      const profile = await prisma.profile.findUnique({
-        where: { userId },
+      // Blocked (either direction), suspended and held users are invisible.
+      if (userId !== req.user.sub && (await isBlockedPair(req.user.sub, userId))) {
+        return reply.code(404).send({ ok: false, message: 'Profile not found' });
+      }
+      const profile = await prisma.profile.findFirst({
+        where: { userId, user: userId === req.user.sub ? undefined : visibleUserFilter },
         select: {
           userId: true,
           displayName: true,
@@ -264,6 +296,21 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
         const message = error instanceof Error ? error.message : 'Failed to prepare photo upload';
         req.log.error({ err: error }, 'Photo upload route failed');
         return reply.code(500).send({ ok: false, message });
+      }
+    }
+  );
+
+  // ---- Voice intro upload (public profile bucket, user's own folder) ----
+  fastify.post(
+    '/me/voice-intro',
+    { preHandler: [fastify.authenticate], config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      try {
+        const { signedUrl, publicUrl } = await createSignedVoiceIntroUploadUrl(req.user.sub);
+        return { ok: true, signedUrl, publicUrl };
+      } catch (error) {
+        req.log.error({ err: error }, 'Voice intro upload route failed');
+        return reply.code(500).send({ ok: false, message: 'Failed to prepare voice intro upload' });
       }
     }
   );

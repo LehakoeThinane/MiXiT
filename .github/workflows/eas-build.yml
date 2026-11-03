@@ -1,0 +1,90 @@
+name: EAS Build
+
+# Mobile CD: builds the iOS/Android apps on Expo Application Services (EAS).
+#  - Manual: Actions tab -> "EAS Build" -> Run workflow (choose platform/profile,
+#    optionally submit to TestFlight / Play internal testing).
+#  - Release: pushing a tag like v1.0.0 builds production binaries for both stores.
+# Requires the repository secret EXPO_TOKEN (expo.dev -> Account settings ->
+# Access tokens). Store submission also needs credentials configured in EAS
+# (`eas credentials`) and the submit profile in eas.json.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform
+        type: choice
+        options: [all, ios, android]
+        default: all
+      profile:
+        description: Build profile (eas.json)
+        type: choice
+        options: [preview, production, development]
+        default: preview
+      submit:
+        description: Submit to TestFlight / Play internal testing (production only)
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: eas-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+
+jobs:
+  build:
+    name: EAS build (${{ inputs.platform || 'all' }} / ${{ inputs.profile || 'production' }})
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      PLATFORM: ${{ inputs.platform || 'all' }}
+      PROFILE: ${{ inputs.profile || 'production' }}
+      SUBMIT: ${{ inputs.submit && 'true' || 'false' }}
+    steps:
+      - name: Check EXPO_TOKEN is configured
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::Add an EXPO_TOKEN repository secret (Settings -> Secrets and variables -> Actions) to run EAS builds."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Never spend build minutes on code that doesn't pass CI.
+      - name: Typecheck and lint
+        run: |
+          pnpm exec tsc --noEmit -p tsconfig.json
+          pnpm run lint
+
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build
+        if: env.SUBMIT != 'true' || env.PROFILE != 'production'
+        run: eas build --platform "$PLATFORM" --profile "$PROFILE" --non-interactive --no-wait
+
+      - name: Build and submit to stores
+        if: env.SUBMIT == 'true' && env.PROFILE == 'production'
+        run: eas build --platform "$PLATFORM" --profile production --non-interactive --no-wait --auto-submit
