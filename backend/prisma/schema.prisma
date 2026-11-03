@@ -138,6 +138,7 @@ model Message {
 
   @@index([senderId, recipientId, createdAt(sort: Desc)])
   @@index([recipientId, createdAt(sort: Desc)])
+  @@index([recipientId, readAt], map: "messages_recipient_read_at_idx") // unread lookups
   @@map("messages")
 }
 
