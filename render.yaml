@@ -13,8 +13,7 @@ services:
     rootDir: backend
     autoDeploy: true
     healthCheckPath: /health
-    buildCommand: corepack enable && corepack pnpm install --frozen-lockfile && corepack pnpm run prisma:generate && corepack pnpm run build
-    preDeployCommand: corepack pnpm exec prisma migrate deploy
+    buildCommand: corepack enable && corepack pnpm install --frozen-lockfile && corepack pnpm run prisma:generate && corepack pnpm run build && corepack pnpm exec prisma migrate deploy
     startCommand: corepack pnpm run start
     envVars:
       - key: NODE_ENV
