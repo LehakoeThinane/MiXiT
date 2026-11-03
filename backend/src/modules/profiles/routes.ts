@@ -5,6 +5,7 @@ import { getProfileCache, invalidateProfileCache, setProfileCache } from '../../
 import { visibleUserFilter } from '../../shared/moderation/actions.js';
 import { isBlockedPair } from '../../shared/moderation/blocks.js';
 import { checkText, FILTERED_MESSAGE } from '../../shared/moderation/content-filter.js';
+import { rewardReferralOnProfileComplete } from '../../shared/referrals/referrals.js';
 import {
   createSignedUploadUrl,
   createSignedVoiceIntroUploadUrl,
@@ -139,6 +140,7 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
         });
       }
 
+      const isFirstProfile = !(await prisma.profile.findUnique({ where: { userId }, select: { id: true } }));
       const profile = await prisma.profile.upsert({
         where: { userId: req.user.sub },
         update: {
@@ -193,6 +195,8 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
       ]);
 
       await invalidateProfileCache(req.user.sub);
+      // First completed profile: grant invite rewards (both users get a Vibe Boost).
+      if (isFirstProfile) void rewardReferralOnProfileComplete(userId);
 
       return {
         ok: true,

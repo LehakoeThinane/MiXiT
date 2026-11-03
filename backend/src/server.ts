@@ -6,6 +6,7 @@ import { buildApp } from './app.js';
 import { ensureRedisConnection } from './shared/cache/redis.js';
 import { env } from './shared/config/env.js';
 import { prisma } from './shared/db/prisma.js';
+import { startEventReminders } from './shared/events/reminders.js';
 import { ensureChatMediaBucket, ensureStorageBucket } from './shared/storage/supabase-storage.js';
 import { logger } from './shared/utils/logger.js';
 
@@ -71,6 +72,7 @@ async function start() {
 
     await app.listen({ host: env.host, port: env.port });
     logger.info(`API running on http://${env.host}:${env.port}`);
+    startEventReminders();
 
     ensureStorageBucket().catch((error: unknown) => {
       logger.warn('Storage bucket setup failed — photo uploads will not work', {

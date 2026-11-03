@@ -7,6 +7,8 @@ import Fastify from 'fastify';
 
 import authRoutes from './modules/auth/routes.js';
 import adminRoutes from './modules/admin/routes.js';
+import eventRoutes from './modules/events/routes.js';
+import { invitePageRoutes, referralRoutes } from './modules/referrals/routes.js';
 import legalRoutes from './modules/legal/routes.js';
 import matchingRoutes from './modules/matching/routes.js';
 import messagingRoutes from './modules/messaging/routes.js';
@@ -98,6 +100,9 @@ export function buildApp() {
   app.register(moderationRoutes, { prefix: '/moderation' });
   app.register(legalRoutes, { prefix: '/legal' });
   app.register(adminRoutes, { prefix: '/admin' });
+  app.register(eventRoutes, { prefix: '/events' });
+  app.register(referralRoutes, { prefix: '/referrals' });
+  app.register(invitePageRoutes, { prefix: '/i' });
   app.register(async (instance) => {
     await initSocketServer(instance);
   });

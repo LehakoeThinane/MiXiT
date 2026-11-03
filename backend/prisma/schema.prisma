@@ -19,6 +19,13 @@ model User {
   // hidden from Discover/rooms pending review (e.g. reported as underage).
   bannedAt       DateTime?        @map("banned_at")
   heldAt         DateTime?        @map("held_at")
+  // Hosts (set by admins) can schedule room sessions and meetups.
+  isHost         Boolean          @default(false) @map("is_host")
+  // Referrals: each user's shareable invite code, who invited them, and when the
+  // "both get a Vibe Boost" reward was granted (once per referred user).
+  referralCode       String?      @unique @map("referral_code")
+  referredById       String?      @map("referred_by_id")
+  referralRewardedAt DateTime?    @map("referral_rewarded_at")
   createdAt      DateTime         @default(now()) @map("created_at")
   profile        Profile?
   sent           Message[]        @relation("sent_messages")
@@ -33,7 +40,10 @@ model User {
   blocksReceived  Block[]  @relation("blocks_received")
   reportsMade     Report[] @relation("reports_made")
   reportsReceived Report[] @relation("reports_received")
+  hostedEvents    RoomEvent[]
+  eventRsvps      RoomEventRsvp[]
 
+  @@index([referredById])
   @@map("users")
 }
 
@@ -169,8 +179,47 @@ model Room {
   updatedAt   DateTime         @updatedAt @map("updated_at")
   memberships RoomMembership[]
   messages    RoomMessage[]
+  events      RoomEvent[]
 
   @@map("rooms")
+}
+
+// Scheduled things happening in a room: a live chat "session" in the app, or a
+// real-world "meetup" at a venue. Created by hosts only.
+model RoomEvent {
+  id          String    @id @default(uuid())
+  roomId      String    @map("room_id")
+  hostId      String    @map("host_id")
+  kind        String    @default("session") // session | meetup
+  title       String
+  description String?
+  venue       String?
+  startsAt    DateTime  @map("starts_at")
+  endsAt      DateTime? @map("ends_at")
+  cancelledAt DateTime? @map("cancelled_at")
+  remindedAt  DateTime? @map("reminded_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  room  Room            @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  host  User            @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  rsvps RoomEventRsvp[]
+
+  @@index([roomId, startsAt])
+  @@index([startsAt])
+  @@map("room_events")
+}
+
+model RoomEventRsvp {
+  eventId   String   @map("event_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  event RoomEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([eventId, userId])
+  @@index([userId])
+  @@map("room_event_rsvps")
 }
 
 model RoomMessage {

@@ -5,6 +5,7 @@ import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
+import { formatEventTime } from '@/lib/events-api';
 import { getRooms, joinRoom, leaveRoom, type RoomItem } from '@/lib/rooms-api';
 import { useAuthStore } from '@/stores/auth-store';
 
@@ -114,6 +115,14 @@ export default function RoomsScreen() {
                 <Text style={styles.roomMeta}>{formatMeta(room.memberCount, room.city)}</Text>
                 {room.description ? (
                   <Text style={styles.roomDesc} numberOfLines={1}>{room.description}</Text>
+                ) : null}
+                {room.nextEvent ? (
+                  <Text
+                    style={[styles.roomEvent, room.nextEvent.isLive && styles.roomEventLive]}
+                    numberOfLines={1}>
+                    {room.nextEvent.isLive ? '🔴 ' : room.nextEvent.kind === 'meetup' ? '📍 ' : '📅 '}
+                    {formatEventTime(room.nextEvent.startsAt, room.nextEvent.isLive)} · {room.nextEvent.title}
+                  </Text>
                 ) : null}
               </View>
               <Pressable
@@ -232,6 +241,15 @@ const styles = StyleSheet.create({
     color: '#8d90a6',
     fontSize: 13,
     marginTop: 2,
+  },
+  roomEvent: {
+    color: '#ffb08f',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 4,
+  },
+  roomEventLive: {
+    color: '#ff8a80',
   },
   emojiBubble: {
     width: 44,

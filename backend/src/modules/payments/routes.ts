@@ -20,7 +20,7 @@ import {
 // Descriptions must only promise what the app actually does (App Store 2.3.1 /
 // 3.1.2, Play deceptive-behaviour policy) — see the premium/boost ranking in
 // matching/routes.ts.
-const BOOST_DURATION_MS = 30 * 60 * 1000;
+export const BOOST_DURATION_MS = 30 * 60 * 1000;
 
 const DEFAULT_PRODUCTS = [
   {
@@ -68,7 +68,7 @@ function slugForStoreProduct(storeProductId: string): string | null {
   return Object.entries(STORE_PRODUCT_IDS).find(([, id]) => id === baseId)?.[0] ?? null;
 }
 
-async function ensureSeedProducts() {
+export async function ensureSeedProducts() {
   await Promise.all(
     DEFAULT_PRODUCTS.map((product) =>
       prisma.product.upsert({

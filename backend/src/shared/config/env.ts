@@ -122,6 +122,13 @@ export const env = {
   // / "Sign-in information"). Both empty = reviewer sign-in disabled.
   reviewAccountEmail: process.env.REVIEW_ACCOUNT_EMAIL?.trim().toLowerCase() ?? '',
   reviewAccountPassword: process.env.REVIEW_ACCOUNT_PASSWORD?.trim() ?? '',
+  // Launch-area gating for Discover. Empty = off (everyone sees everyone). Set to a
+  // comma-separated list of profile cities, e.g. "Soweto,Johannesburg", to limit
+  // Discover to those cities; users elsewhere get a "coming soon" state.
+  launchCities: (process.env.LAUNCH_CITIES ?? '')
+    .split(',')
+    .map((city) => city.trim().toLowerCase())
+    .filter(Boolean),
   // Shown on the public legal/support pages and used as the contact address.
   legalEntityName: process.env.LEGAL_ENTITY_NAME?.trim() || 'Peloentle Digital Solution',
   supportEmail: process.env.SUPPORT_EMAIL?.trim() || 'mixit@peloentle.com',

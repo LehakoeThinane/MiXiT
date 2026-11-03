@@ -12,10 +12,10 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  Easing,
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  Switch,
   ScrollView,
   StyleSheet,
   Text,
@@ -24,6 +24,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { LiquidBackdrop } from '@/components/liquid-backdrop';
 import { ApiError, API_BASE_URL } from '@/lib/api-client';
 import {
   appleSignIn,
@@ -35,6 +36,8 @@ import {
   updatePhone,
 } from '@/lib/auth-api';
 import { openLegalPage } from '@/lib/legal';
+import { compressImage } from '@/lib/media';
+import { getMyReferral, shareInviteOnWhatsApp } from '@/lib/referrals-api';
 import { registerForPushNotifications } from '@/lib/notifications';
 import {
   getMyProfile,
@@ -45,6 +48,7 @@ import {
 } from '@/lib/profile-api';
 import { resetPurchasesUser } from '@/lib/purchases';
 import { useAuthStore } from '@/stores/auth-store';
+import { useSettingsStore } from '@/stores/settings-store';
 
 // Matches the backend profile schema (voiceIntroDurationSec 15–30).
 const VOICE_INTRO_MIN_SEC = 15;
@@ -158,10 +162,6 @@ export default function ProfileTabScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const slide = useRef(new Animated.Value(0)).current;
-  const orbA = useRef(new Animated.Value(0)).current;
-  const orbB = useRef(new Animated.Value(0)).current;
-  const orbC = useRef(new Animated.Value(0)).current;
-  const orbD = useRef(new Animated.Value(0)).current;
   const recordingRef = useRef<Audio.Recording | null>(null);
   const voiceMsRef = useRef(0);
   const sessionBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -203,6 +203,10 @@ export default function ProfileTabScreen() {
   const [showReviewLogin, setShowReviewLogin] = useState(false);
   const [reviewEmail, setReviewEmail] = useState('');
   const [reviewPassword, setReviewPassword] = useState('');
+  const pendingReferralCode = useSettingsStore((state) => state.pendingReferralCode);
+  const setPendingReferralCode = useSettingsStore((state) => state.setPendingReferralCode);
+  const dataSaver = useSettingsStore((state) => state.dataSaver);
+  const setDataSaver = useSettingsStore((state) => state.setDataSaver);
   const [stepError, setStepError] = useState<string | null>(null);
   const [showSessionRestoredBanner, setShowSessionRestoredBanner] = useState(false);
   const [showCompletionStep, setShowCompletionStep] = useState(false);
@@ -224,6 +228,23 @@ export default function ProfileTabScreen() {
     enabled: isAuthenticated,
   });
 
+  const referralQuery = useQuery({
+    queryKey: ['referral', user?.id],
+    queryFn: getMyReferral,
+    enabled: isAuthenticated && Boolean(profileQuery.data),
+    staleTime: 5 * 60_000,
+  });
+
+  const handleInvite = async () => {
+    try {
+      const info = referralQuery.data ?? (await referralQuery.refetch()).data;
+      if (!info) throw new Error('Could not load your invite link');
+      await shareInviteOnWhatsApp(info);
+    } catch (error) {
+      Alert.alert('Could not open invite', resolveErrorMessage(error));
+    }
+  };
+
   useEffect(() => {
     Animated.sequence([
       Animated.timing(slide, {
@@ -241,36 +262,6 @@ export default function ProfileTabScreen() {
     ]).start();
   }, [slide, step]);
 
-  useEffect(() => {
-    const createLoop = (value: Animated.Value, duration: number, delayMs = 0) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(delayMs),
-          Animated.timing(value, {
-            toValue: 1,
-            duration,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-          Animated.timing(value, {
-            toValue: 0,
-            duration,
-            easing: Easing.inOut(Easing.sin),
-            useNativeDriver: true,
-          }),
-        ])
-      );
-
-    const loops = [
-      createLoop(orbA, 18000, 0),
-      createLoop(orbB, 22000, 900),
-      createLoop(orbC, 20000, 1400),
-      createLoop(orbD, 24000, 500),
-    ];
-
-    loops.forEach((loop) => loop.start());
-    return () => loops.forEach((loop) => loop.stop());
-  }, [orbA, orbB, orbC, orbD]);
 
   useEffect(() => {
     if (sessionQuery.isError) {
@@ -380,6 +371,7 @@ export default function ProfileTabScreen() {
 
   const authCallbacks = {
     onSuccess: async (payload: Awaited<ReturnType<typeof googleSignIn>>) => {
+      setPendingReferralCode(null); // invite applied (only counts for new accounts)
       setStepError(null);
       setSession({
         user: payload.user,
@@ -397,12 +389,12 @@ export default function ProfileTabScreen() {
   };
 
   const googleAuthMutation = useMutation({
-    mutationFn: (idToken: string) => googleSignIn(idToken, acceptedTerms),
+    mutationFn: (idToken: string) => googleSignIn(idToken, acceptedTerms, pendingReferralCode),
     ...authCallbacks,
   });
 
   const appleAuthMutation = useMutation({
-    mutationFn: (identityToken: string) => appleSignIn(identityToken, acceptedTerms),
+    mutationFn: (identityToken: string) => appleSignIn(identityToken, acceptedTerms, pendingReferralCode),
     ...authCallbacks,
   });
 
@@ -594,16 +586,13 @@ export default function ProfileTabScreen() {
     if (result.canceled || !result.assets.length) return;
 
     const asset = result.assets[0];
-    // Normalise Android aliases before sending to the backend
-    const rawMime = asset.mimeType ?? 'image/jpeg';
-    const mimeType = rawMime === 'image/jpg' ? 'image/jpeg' : rawMime;
-    const ext = mimeType.split('/')[1] ?? 'jpg';
-    const filename = asset.fileName ?? `photo-${Date.now()}.${ext}`;
-
     setUploadingPhotoIndex(index);
     try {
+      // Resize + compress before upload (saves data for uploader and viewers).
+      const { uri, mimeType } = await compressImage(asset.uri, asset.width);
+      const filename = `photo-${Date.now()}.jpg`;
       const { signedUrl, publicUrl } = await requestPhotoUploadUrl(filename, mimeType);
-      await uploadPhotoToStorage(signedUrl, asset.uri, mimeType);
+      await uploadPhotoToStorage(signedUrl, uri, mimeType);
       setSelectedPhotos((prev) => {
         const next = [...prev];
         next[index] = publicUrl;
@@ -796,63 +785,6 @@ export default function ProfileTabScreen() {
     }
   }, [step]);
 
-  const liquidBackdrop = (
-    <View pointerEvents="none" style={styles.liquidBackground}>
-      <Animated.View
-        style={[
-          styles.orb,
-          styles.orbCoral,
-          {
-            transform: [
-              { translateX: orbA.interpolate({ inputRange: [0, 1], outputRange: [-20, 36] }) },
-              { translateY: orbA.interpolate({ inputRange: [0, 1], outputRange: [-16, 48] }) },
-              { scale: orbA.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] }) },
-            ],
-          },
-        ]}
-      />
-      <Animated.View
-        style={[
-          styles.orb,
-          styles.orbNavy,
-          {
-            transform: [
-              { translateX: orbB.interpolate({ inputRange: [0, 1], outputRange: [24, -40] }) },
-              { translateY: orbB.interpolate({ inputRange: [0, 1], outputRange: [18, -38] }) },
-              { scale: orbB.interpolate({ inputRange: [0, 1], outputRange: [1.1, 0.92] }) },
-            ],
-          },
-        ]}
-      />
-      <Animated.View
-        style={[
-          styles.orb,
-          styles.orbRose,
-          {
-            transform: [
-              { translateX: orbC.interpolate({ inputRange: [0, 1], outputRange: [-12, 28] }) },
-              { translateY: orbC.interpolate({ inputRange: [0, 1], outputRange: [24, -44] }) },
-              { scale: orbC.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.16] }) },
-            ],
-          },
-        ]}
-      />
-      <Animated.View
-        style={[
-          styles.orb,
-          styles.orbTeal,
-          {
-            transform: [
-              { translateX: orbD.interpolate({ inputRange: [0, 1], outputRange: [18, -34] }) },
-              { translateY: orbD.interpolate({ inputRange: [0, 1], outputRange: [-26, 36] }) },
-              { scale: orbD.interpolate({ inputRange: [0, 1], outputRange: [1.04, 1.22] }) },
-            ],
-          },
-        ]}
-      />
-      <View style={styles.liquidScrim} />
-    </View>
-  );
 
   const voiceTimerSeconds = isRecording || pendingVoiceUri ? recordSeconds : savedVoiceIntro?.durationSec ?? 0;
   const voiceRecorder = (
@@ -904,7 +836,7 @@ export default function ProfileTabScreen() {
   if (shouldShowProfileHome) {
     return (
       <SafeAreaView style={styles.container}>
-        {liquidBackdrop}
+        <LiquidBackdrop />
         <KeyboardAvoidingView
           style={styles.flex}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -1263,6 +1195,40 @@ export default function ProfileTabScreen() {
               </View>
             )}
 
+            <View style={styles.inviteCard}>
+              <Text style={styles.inviteTitle}>Invite friends, get a free Boost 🚀</Text>
+              <Text style={styles.inviteBody}>
+                When a friend joins with your link and finishes their profile, you both get a free 30-minute Vibe Boost.
+              </Text>
+              {referralQuery.data ? (
+                <Text style={styles.inviteMeta}>
+                  Your code {referralQuery.data.code} · {referralQuery.data.joined}{' '}
+                  {referralQuery.data.joined === 1 ? 'friend' : 'friends'} joined
+                </Text>
+              ) : null}
+              <Pressable style={[styles.button, styles.whatsappButton]} onPress={handleInvite}>
+                <Text style={styles.buttonText}>Invite on WhatsApp</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.settingRow}>
+              <View style={styles.settingTextWrap}>
+                <Text style={styles.settingTitle}>Data saver</Text>
+                <Text style={styles.settingBody}>Chat photos load only when you tap them, and backgrounds stay still.</Text>
+              </View>
+              <Switch
+                value={dataSaver}
+                onValueChange={setDataSaver}
+                trackColor={{ false: '#303754', true: 'rgba(255,107,53,0.6)' }}
+                thumbColor={dataSaver ? '#ff6b35' : '#c3c9e0'}
+                accessibilityLabel="Data saver"
+              />
+            </View>
+
+            <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/safety')}>
+              <Text style={styles.secondaryButtonText}>Safety centre</Text>
+            </Pressable>
+
             <Pressable style={[styles.button, styles.secondaryButton]} onPress={() => router.push('/blocked')}>
               <Text style={styles.secondaryButtonText}>Blocked users</Text>
             </Pressable>
@@ -1301,7 +1267,7 @@ export default function ProfileTabScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {liquidBackdrop}
+      <LiquidBackdrop />
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -2323,5 +2289,59 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginTop: 18,
     paddingVertical: 6,
+  },
+  inviteCard: {
+    marginTop: 14,
+    padding: 16,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,107,53,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,107,53,0.35)',
+  },
+  inviteTitle: {
+    color: '#f4f6ff',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  inviteBody: {
+    color: '#c6cbe2',
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 4,
+  },
+  inviteMeta: {
+    color: '#ffb08f',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  whatsappButton: {
+    backgroundColor: '#1f9d55',
+    borderColor: 'rgba(255,255,255,0.25)',
+  },
+  settingRow: {
+    marginTop: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  settingTextWrap: {
+    flex: 1,
+  },
+  settingTitle: {
+    color: '#f4f6ff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  settingBody: {
+    color: '#aab0cc',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
   },
 });

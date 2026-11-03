@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
 import { ReportSheet, type ReportTarget } from '@/components/report-sheet';
+import { RoomEventsBar } from '@/components/room-events-bar';
 import { blockUser, getBlockedUsers } from '@/lib/moderation-api';
 import { getRoomMessages, sendRoomMessage, type RoomMessage } from '@/lib/rooms-api';
 import { getSocket } from '@/lib/socket-client';
@@ -184,6 +185,8 @@ export default function RoomChatScreen() {
           <Text style={styles.headerSub}>Group chat</Text>
         </View>
       </View>
+
+      <RoomEventsBar roomId={roomId} roomName={roomName} />
 
       <KeyboardAvoidingView
         style={styles.flex}

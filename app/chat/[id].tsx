@@ -7,13 +7,18 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { ActionSheet, type ActionSheetOption } from '@/components/action-sheet';
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
+import { MeetupPlanSheet } from '@/components/meetup-plan-sheet';
 import { ReportSheet, type ReportTarget } from '@/components/report-sheet';
 import { blockUser } from '@/lib/moderation-api';
 import { registerForPushNotifications } from '@/lib/notifications';
+import { mentionsMoney } from '@/lib/safety';
+import { compressImage } from '@/lib/media';
 import { getThreadMessages, requestMediaUploadUrl, sendMessage, type ThreadMessage, uploadMediaToStorage } from '@/lib/messaging-api';
 import { getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
+import { useSettingsStore } from '@/stores/settings-store';
 import { useUnreadStore } from '@/stores/unread-store';
 
 function formatTime(value: string) {
@@ -42,6 +47,12 @@ export default function ChatScreen() {
   const typingDot = useRef(new Animated.Value(0)).current;
   const scrollRef = useRef<ScrollView>(null);
   const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
+  const [scamWarningDismissed, setScamWarningDismissed] = useState(false);
+  // Data saver: chat photos only download when tapped.
+  const dataSaver = useSettingsStore((state) => state.dataSaver);
+  const [loadedImageIds, setLoadedImageIds] = useState<Set<string>>(() => new Set());
   const askedForPushRef = useRef(false);
 
   const threadQuery = useQuery({
@@ -97,13 +108,20 @@ export default function ChatScreen() {
       { text: 'Block', style: 'destructive', onPress: () => blockMutation.mutate() },
     ]);
 
-  // Alert is limited to 3 buttons on Android — keep these menus at 3.
-  const handleOptions = () =>
-    Alert.alert(peerName, undefined, [
-      { text: 'Report user', onPress: () => setReportTarget({ userId: peerUserId, name: peerName }) },
-      { text: 'Block user', style: 'destructive', onPress: confirmBlock },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+  const openPeerProfile = () =>
+    router.push({
+      pathname: '/profile/[id]',
+      params: { id: peerUserId, name: peerName, initial: peerInitial, online: params.online ?? '0' },
+    });
+
+  const chatMenuOptions: ActionSheetOption[] = [
+    { label: 'View profile', onPress: openPeerProfile },
+    { label: 'Share my meetup plan', onPress: () => setPlanOpen(true) },
+    { label: 'Safety tips', onPress: () => router.push('/safety') },
+    { label: 'Report user', onPress: () => setReportTarget({ userId: peerUserId, name: peerName }) },
+    { label: 'Block user', destructive: true, onPress: confirmBlock },
+  ];
+  const handleOptions = () => setMenuOpen(true);
 
   const handleMessageLongPress = (message: ThreadMessage) =>
     Alert.alert('Message', undefined, [
@@ -281,14 +299,12 @@ export default function ChatScreen() {
     if (result.canceled || !result.assets[0]) return;
 
     const asset = result.assets[0];
-    const rawMime = asset.mimeType ?? 'image/jpeg';
-    const mimeType = rawMime === 'image/jpg' ? 'image/jpeg' : rawMime;
-    const ext = mimeType.split('/')[1] ?? 'jpg';
-    const filename = `image-${Date.now()}.${ext}`;
-
     try {
+      // Resize + compress before upload (saves data for both people in the chat).
+      const { uri, mimeType } = await compressImage(asset.uri, asset.width);
+      const filename = `image-${Date.now()}.jpg`;
       const { signedUrl, publicUrl } = await requestMediaUploadUrl(filename, mimeType);
-      await uploadMediaToStorage(signedUrl, asset.uri, mimeType);
+      await uploadMediaToStorage(signedUrl, uri, mimeType);
       await sendMessage({ recipientId: peerUserId, type: 'image', mediaUrl: publicUrl });
       await queryClient.invalidateQueries({ queryKey: ['thread', peerUserId] });
     } catch (err) {
@@ -327,6 +343,11 @@ export default function ChatScreen() {
     }
   }, [messages.length]);
 
+  // Scam warning when the other person brings up money, vouchers, crypto, OTPs…
+  const showScamWarning =
+    !scamWarningDismissed &&
+    messages.some((m) => m.senderId === peerUserId && m.type === 'text' && mentionsMoney(m.content));
+
   return (
     <KeyboardAvoidingView
       style={styles.flex}
@@ -336,6 +357,8 @@ export default function ChatScreen() {
       <LiquidBackdrop />
       <Stack.Screen options={{ headerShown: false }} />
       <ReportSheet target={reportTarget} onClose={() => setReportTarget(null)} />
+      <ActionSheet visible={menuOpen} title={peerName} options={chatMenuOptions} onClose={() => setMenuOpen(false)} />
+      <MeetupPlanSheet visible={planOpen} withName={peerName} onClose={() => setPlanOpen(false)} />
 
       <View style={styles.header}>
         <Text style={styles.backButton} onPress={() => router.back()}>
@@ -361,6 +384,26 @@ export default function ChatScreen() {
           <Text style={styles.optionsText}>⋯</Text>
         </Pressable>
       </View>
+
+      {showScamWarning ? (
+        <View style={styles.scamBanner}>
+          <Text style={styles.scamTitle}>⚠️ Money talk? Be careful.</Text>
+          <Text style={styles.scamBody}>
+            Never send money, airtime, vouchers or crypto, or share bank details or OTPs with someone you met online.
+          </Text>
+          <View style={styles.scamActions}>
+            <Pressable onPress={() => router.push('/safety')}>
+              <Text style={styles.scamLink}>Safety tips</Text>
+            </Pressable>
+            <Pressable onPress={() => setReportTarget({ userId: peerUserId, name: peerName })}>
+              <Text style={styles.scamLink}>Report</Text>
+            </Pressable>
+            <Pressable onPress={() => setScamWarningDismissed(true)}>
+              <Text style={styles.scamDismiss}>Dismiss</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
 
       <ScrollView ref={scrollRef} contentContainerStyle={styles.messages}>
         {threadQuery.isLoading ? (
@@ -396,11 +439,22 @@ export default function ChatScreen() {
                   </Text>
                 </Pressable>
               ) : message.type === 'image' && message.mediaUrl ? (
-                <Image
-                  source={{ uri: message.mediaUrl }}
-                  style={styles.imageBubble}
-                  contentFit="cover"
-                />
+                dataSaver && !mine && !loadedImageIds.has(message.id) ? (
+                  <Pressable
+                    style={[styles.imageBubble, styles.imagePlaceholder]}
+                    onPress={() => setLoadedImageIds((prev) => new Set(prev).add(message.id))}
+                    accessibilityLabel="Load photo">
+                    <Text style={styles.imagePlaceholderIcon}>🖼️</Text>
+                    <Text style={styles.imagePlaceholderText}>Tap to load photo</Text>
+                  </Pressable>
+                ) : (
+                  <Image
+                    source={{ uri: message.mediaUrl }}
+                    style={styles.imageBubble}
+                    contentFit="cover"
+                    cachePolicy="disk"
+                  />
+                )
               ) : (
                 <View style={[styles.bubble, mine ? styles.mineBubble : styles.theirBubble]}>
                   <Text style={styles.messageText}>{message.content ?? ''}</Text>
@@ -625,6 +679,56 @@ const styles = StyleSheet.create({
   },
   tickRead: {
     color: '#ff6b35',
+  },
+  imagePlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+    gap: 4,
+  },
+  imagePlaceholderIcon: {
+    fontSize: 28,
+  },
+  imagePlaceholderText: {
+    color: '#c6cbe2',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  scamBanner: {
+    marginHorizontal: 12,
+    marginTop: 8,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,193,7,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,193,7,0.45)',
+    gap: 4,
+  },
+  scamTitle: {
+    color: '#ffe08a',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  scamBody: {
+    color: '#e9e3c8',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  scamActions: {
+    flexDirection: 'row',
+    gap: 18,
+    marginTop: 4,
+  },
+  scamLink: {
+    color: '#ffe08a',
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
+  scamDismiss: {
+    color: '#c9c3a8',
+    fontWeight: '600',
   },
   imageBubble: {
     width: 220,

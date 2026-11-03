@@ -168,7 +168,9 @@ Information) and Google (App access). Reviewers use "App reviewer? Sign in with 
 | GET | `/admin/reports?status=open` | Report queue (underage first) with evidence |
 | GET | `/admin/users/:userId` | Profile, reports and room messages for a user |
 | POST | `/admin/reports/:id/resolve` | `{ "action": "dismiss" \| "warn" \| "hold" \| "ban", "note"? }` |
+| GET | `/admin/users?email=` | Look up a user (id, host status) by email |
 | POST | `/admin/users/:userId/ban` · `/unban` · `/release` | Direct user actions |
+| POST | `/admin/users/:userId/host` | `{ "isHost": true }` — lets the user schedule room sessions and meetups |
 
 ### Store console forms
 App privacy labels / Data safety (data collected: email, name, photos, voice, messages,

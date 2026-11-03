@@ -47,3 +47,20 @@ export async function sendVibe(toUserId: string) {
   });
   return response;
 }
+
+export type DiscoverFeed = {
+  candidates: DiscoverCandidate[];
+  /** Set when the server's launch-area switch keeps this user out of Discover. */
+  gatedMessage: string | null;
+};
+
+export async function getDiscoverFeed(): Promise<DiscoverFeed> {
+  const response = await apiRequest<CandidatesResponse & { gated?: boolean; message?: string }>(
+    '/matching/candidates',
+    { auth: true }
+  );
+  return {
+    candidates: response.candidates,
+    gatedMessage: response.gated ? response.message ?? "MiXiT isn't in your area yet." : null,
+  };
+}

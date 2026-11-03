@@ -45,23 +45,55 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
       take: 50,
     });
 
-    return {
-      ok: true,
-      rooms: rooms.map((room) => {
-        const memberCount = room.memberships.length;
-        const joined = room.memberships.some((membership) => membership.userId === currentUserId);
-        return {
-          id: room.id,
-          slug: room.slug,
-          name: room.name,
-          emoji: room.emoji ?? '💬',
-          city: room.city ?? 'Nearby',
-          description: room.description,
-          memberCount,
-          joined,
-        };
-      }),
-    };
+    // Next upcoming (or currently live) event per room, for the "Next: Fri 20:00" line.
+    const liveWindowMs = 2 * 60 * 60 * 1000;
+    const events = await prisma.roomEvent.findMany({
+      where: {
+        roomId: { in: rooms.map((room) => room.id) },
+        cancelledAt: null,
+        startsAt: { gte: new Date(Date.now() - liveWindowMs) },
+        host: visibleUserFilter,
+      },
+      orderBy: { startsAt: 'asc' },
+      select: { roomId: true, title: true, kind: true, startsAt: true, endsAt: true },
+    });
+    const nextEventByRoom = new Map<string, (typeof events)[number]>();
+    for (const event of events) {
+      const end = event.endsAt ?? new Date(event.startsAt.getTime() + liveWindowMs);
+      if (end.getTime() > Date.now() && !nextEventByRoom.has(event.roomId)) nextEventByRoom.set(event.roomId, event);
+    }
+
+    const roomsOut = rooms.map((room) => {
+      const memberCount = room.memberships.length;
+      const joined = room.memberships.some((membership) => membership.userId === currentUserId);
+      const next = nextEventByRoom.get(room.id);
+      return {
+        id: room.id,
+        slug: room.slug,
+        name: room.name,
+        emoji: room.emoji ?? '💬',
+        city: room.city ?? 'Nearby',
+        description: room.description,
+        memberCount,
+        joined,
+        nextEvent: next
+          ? {
+              title: next.title,
+              kind: next.kind,
+              startsAt: next.startsAt.toISOString(),
+              isLive: next.startsAt.getTime() <= Date.now(),
+            }
+          : null,
+      };
+    });
+    // Rooms with something live or coming up float to the top.
+    roomsOut.sort((a, b) => {
+      const ta = a.nextEvent ? new Date(a.nextEvent.startsAt).getTime() : Infinity;
+      const tb = b.nextEvent ? new Date(b.nextEvent.startsAt).getTime() : Infinity;
+      return ta === tb ? 0 : ta - tb;
+    });
+
+    return { ok: true, rooms: roomsOut };
   });
 
   fastify.post<{

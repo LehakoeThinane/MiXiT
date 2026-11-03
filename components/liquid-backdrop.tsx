@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
 
+import { useLiteMode } from '@/hooks/use-lite-mode';
+
 type LiquidBackdropProps = {
   dimmerOpacity?: number;
 };
@@ -30,8 +32,11 @@ export function LiquidBackdrop({ dimmerOpacity = 0.6 }: LiquidBackdropProps) {
   const orbB = useRef(new Animated.Value(0)).current;
   const orbC = useRef(new Animated.Value(0)).current;
   const orbD = useRef(new Animated.Value(0)).current;
+  // Low-end phones / data saver / reduce-motion: same look, no continuous animation.
+  const lite = useLiteMode();
 
   useEffect(() => {
+    if (lite) return;
     const loops = [
       createLoop(orbA, 18000, 0),
       createLoop(orbB, 22000, 900),
@@ -41,7 +46,7 @@ export function LiquidBackdrop({ dimmerOpacity = 0.6 }: LiquidBackdropProps) {
 
     loops.forEach((loop) => loop.start());
     return () => loops.forEach((loop) => loop.stop());
-  }, [orbA, orbB, orbC, orbD]);
+  }, [lite, orbA, orbB, orbC, orbD]);
 
   return (
     <View pointerEvents="none" style={styles.liquidBackground}>
