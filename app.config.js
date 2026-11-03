@@ -98,10 +98,11 @@ module.exports = {
         'expo-image-picker',
         {
           photosPermission: 'Allow MiXiT to access your photos so you can add them to your profile or send them in chats.',
-          // Camera is never used; `false` keeps the plugin from adding the
-          // camera / microphone permissions (and from overriding the mic string above).
+          // Camera is never used; `false` keeps the plugin from adding it.
+          // Do NOT set microphonePermission: false — on Android that strips
+          // RECORD_AUDIO from the manifest and breaks voice intros/voice notes.
+          // (The plugin keeps the NSMicrophoneUsageDescription set in ios.infoPlist.)
           cameraPermission: false,
-          microphonePermission: false,
         },
       ],
       [

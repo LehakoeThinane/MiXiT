@@ -274,9 +274,18 @@ export default function ProfileTabScreen() {
 
   useEffect(() => {
     if (sessionQuery.isError) {
-      clearSession();
-      setStep(1);
-      setStepError('Your session expired. Please sign in again.');
+      // Only end the session when the server actually rejected it — not when the
+      // phone is offline or the API is temporarily down.
+      const status = sessionQuery.error instanceof ApiError ? sessionQuery.error.status : 0;
+      if (status === 401 || status === 403) {
+        clearSession();
+        setStep(1);
+        setStepError(
+          status === 403 ? 'Your account has been suspended.' : 'Your session expired. Please sign in again.'
+        );
+      } else {
+        setStepError(resolveErrorMessage(sessionQuery.error));
+      }
       return;
     }
 
@@ -291,7 +300,7 @@ export default function ProfileTabScreen() {
         refreshToken,
       });
     }
-  }, [accessToken, clearSession, refreshToken, sessionQuery.data, sessionQuery.isError, setSession]);
+  }, [accessToken, clearSession, refreshToken, sessionQuery.data, sessionQuery.error, sessionQuery.isError, setSession]);
 
   // Keep the phone editor in sync with the persisted value — only reacts to the
   // phone value itself changing, so it won't clobber an in-progress edit.
