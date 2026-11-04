@@ -34,17 +34,17 @@ type MeResponse = {
   } | null;
 };
 
-export async function googleSignIn(idToken: string, acceptedTerms: boolean) {
+export async function googleSignIn(idToken: string, acceptedTerms: boolean, referralCode?: string | null) {
   return apiRequest<AuthResponse>('/auth/google', {
     method: 'POST',
-    body: { idToken, acceptedTerms },
+    body: { idToken, acceptedTerms, ...(referralCode ? { referralCode } : {}) },
   });
 }
 
-export async function appleSignIn(identityToken: string, acceptedTerms: boolean) {
+export async function appleSignIn(identityToken: string, acceptedTerms: boolean, referralCode?: string | null) {
   return apiRequest<AuthResponse>('/auth/apple', {
     method: 'POST',
-    body: { identityToken, acceptedTerms },
+    body: { identityToken, acceptedTerms, ...(referralCode ? { referralCode } : {}) },
   });
 }
 

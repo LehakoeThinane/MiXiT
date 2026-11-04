@@ -9,6 +9,7 @@ export type RoomItem = {
   description: string | null;
   memberCount: number;
   joined: boolean;
+  nextEvent: { title: string; kind: 'session' | 'meetup'; startsAt: string; isLive: boolean } | null;
 };
 
 export type RoomMessage = {

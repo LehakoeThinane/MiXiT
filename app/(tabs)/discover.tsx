@@ -16,7 +16,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Confetti } from '@/components/confetti';
 import { LiquidBackdrop } from '@/components/liquid-backdrop';
-import { type DiscoverCandidate, getDiscoverCandidates, sendVibe } from '@/lib/matching-api';
+import { type DiscoverCandidate, getDiscoverFeed, sendVibe } from '@/lib/matching-api';
+import { getMyReferral, shareInviteOnWhatsApp } from '@/lib/referrals-api';
 import { useAuthStore } from '@/stores/auth-store';
 
 function Waveform({ active }: { active: boolean }) {
@@ -174,6 +175,15 @@ export default function DiscoverScreen() {
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [matchProfile, setMatchProfile] = useState<DiscoverCandidate | null>(null);
   const [activeOnly, setActiveOnly] = useState(false);
+  const [gatedMessage, setGatedMessage] = useState<string | null>(null);
+
+  const handleInvite = async () => {
+    try {
+      await shareInviteOnWhatsApp(await getMyReferral());
+    } catch (error) {
+      Alert.alert('Could not open invite', error instanceof Error ? error.message : 'Try again');
+    }
+  };
   const isAuthenticated = useAuthStore((state) => Boolean(state.accessToken));
   const soundRef = useRef<Audio.Sound | null>(null);
 
@@ -216,7 +226,11 @@ export default function DiscoverScreen() {
 
   const candidatesQuery = useQuery({
     queryKey: ['discover-candidates'],
-    queryFn: getDiscoverCandidates,
+    queryFn: async () => {
+      const feed = await getDiscoverFeed();
+      setGatedMessage(feed.gatedMessage);
+      return feed.candidates;
+    },
     enabled: isAuthenticated,
     staleTime: 30_000,
   });
@@ -277,8 +291,17 @@ export default function DiscoverScreen() {
         </View>
       ) : profiles.length === 0 ? (
         <View style={styles.stateCard}>
-          <Text style={styles.stateTitle}>No one nearby yet</Text>
-          <Text style={styles.stateBody}>Invite friends to MiXiT or check back soon.</Text>
+          <Text style={styles.stateTitle}>{gatedMessage ? 'Coming soon to your area' : 'No one nearby yet'}</Text>
+          <Text style={styles.stateBody}>
+            {gatedMessage ??
+              'MiXiT is just getting started here. Invite friends — you both get a free Boost — or meet people in Rooms.'}
+          </Text>
+          <Pressable style={[styles.retryBtn, styles.inviteBtn]} onPress={handleInvite}>
+            <Text style={styles.inviteBtnText}>Invite friends on WhatsApp</Text>
+          </Pressable>
+          <Pressable style={styles.retryBtn} onPress={() => router.push('/(tabs)/rooms')}>
+            <Text style={styles.retryBtnText}>Explore rooms</Text>
+          </Pressable>
         </View>
       ) : (
         <FlashList
@@ -761,6 +784,14 @@ const styles = StyleSheet.create({
   },
   retryBtnText: {
     color: '#121625',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  inviteBtn: {
+    backgroundColor: '#1f9d55',
+  },
+  inviteBtnText: {
+    color: '#ffffff',
     fontWeight: '700',
     fontSize: 15,
   },

@@ -35,6 +35,8 @@ function RootLayout() {
             <Stack.Screen name="room/[id]" options={{ headerShown: false }} />
             <Stack.Screen name="premium" options={{ headerShown: false }} />
             <Stack.Screen name="blocked" options={{ headerShown: false }} />
+            <Stack.Screen name="safety" options={{ headerShown: false }} />
+            <Stack.Screen name="invite/[code]" options={{ headerShown: false }} />
           </Stack>
           <StatusBar style="auto" />
         </ThemeProvider>

@@ -8,7 +8,7 @@
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://mixit-production-dcd2.up.railway.app",
+        "EXPO_PUBLIC_API_URL": "https://mixit-8x14.onrender.com",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "795548595411-smepeeamrvan13bgnjs1p1l5ullo5c5o.apps.googleusercontent.com",
         "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "795548595411-o517j904khj8sgk7tt7ltq1q22innhkp.apps.googleusercontent.com"
       }
@@ -16,7 +16,7 @@
     "preview": {
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://mixit-production-dcd2.up.railway.app",
+        "EXPO_PUBLIC_API_URL": "https://mixit-8x14.onrender.com",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "795548595411-smepeeamrvan13bgnjs1p1l5ullo5c5o.apps.googleusercontent.com",
         "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "795548595411-o517j904khj8sgk7tt7ltq1q22innhkp.apps.googleusercontent.com"
       },
@@ -30,7 +30,7 @@
     "production": {
       "autoIncrement": true,
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://mixit-production-dcd2.up.railway.app",
+        "EXPO_PUBLIC_API_URL": "https://mixit-8x14.onrender.com",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "795548595411-smepeeamrvan13bgnjs1p1l5ullo5c5o.apps.googleusercontent.com",
         "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "795548595411-o517j904khj8sgk7tt7ltq1q22innhkp.apps.googleusercontent.com"
       }

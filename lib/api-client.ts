@@ -80,16 +80,25 @@ async function tryRefreshToken() {
   const { refreshToken, updateTokens, clearSession } = useAuthStore.getState();
   if (!refreshToken) return null;
 
-  const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ refreshToken }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ refreshToken }),
+    });
+  } catch {
+    // Offline / server unreachable: keep the session (don't log the user out over a
+    // network blip) and let the original request's error surface instead.
+    return null;
+  }
 
   if (!response.ok) {
-    clearSession();
+    // Only a definite rejection of the refresh token ends the session; a server
+    // outage (5xx) must not log everyone out.
+    if (response.status === 401 || response.status === 403) clearSession();
     return null;
   }
 
@@ -136,10 +145,14 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     });
   } catch (error) {
     clearTimeout(timer);
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    // Don't use `instanceof DOMException`: Hermes (React Native) has no DOMException
+    // global, so that check itself throws a ReferenceError and hides the real error.
+    if ((error as { name?: string } | null)?.name === 'AbortError') {
       throw new ApiError(0, 'Request timed out. Check your connection and try again.');
     }
-    throw error;
+    // fetch rejects with a TypeError ("Network request failed") when the server
+    // can't be reached at all — offline, DNS failure, or the API is down.
+    throw new ApiError(0, "Can't reach MiXiT right now. Check your connection and try again.");
   }
   clearTimeout(timer);
 
@@ -158,6 +171,12 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   if (!response.ok) {
+    // MiXiT API errors always carry `ok: false`. A 5xx without it came from the
+    // hosting layer (e.g. "Application failed to respond") — show a friendly message.
+    const fromMixitApi = json.ok === false;
+    if (response.status >= 500 && !fromMixitApi) {
+      throw new ApiError(response.status, 'MiXiT is temporarily unavailable. Please try again in a few minutes.', json);
+    }
     const message = typeof json.message === 'string' ? json.message : `Request failed (${response.status})`;
     throw new ApiError(response.status, message, json);
   }

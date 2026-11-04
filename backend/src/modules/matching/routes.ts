@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 
+import { env } from '../../shared/config/env.js';
 import { prisma } from '../../shared/db/prisma.js';
 import { visibleUserFilter } from '../../shared/moderation/actions.js';
 import { getBlockedUserIds, isBlockedPair } from '../../shared/moderation/blocks.js';
@@ -209,6 +210,18 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
       const myInterests = parseJsonStringArray(myProfile?.interests);
       const myIntents = parseJsonStringArray(myProfile?.intents);
 
+      // Launch-area gating (off unless LAUNCH_CITIES is set on the server).
+      const inLaunchArea = (city: string | null | undefined) =>
+        env.launchCities.length === 0 || Boolean(city && env.launchCities.includes(city.trim().toLowerCase()));
+      if (!inLaunchArea(myProfile?.city)) {
+        return {
+          ok: true,
+          candidates: [],
+          gated: true,
+          message: "MiXiT isn't in your area yet. Invite friends to help bring it to you — rooms are open to everyone.",
+        };
+      }
+
       // Exclude users we already vibed, and anyone blocked in either direction
       const [mySentVibes, blockedUserIds] = await Promise.all([
         prisma.vibe.findMany({
@@ -290,6 +303,7 @@ const matchingRoutes: FastifyPluginAsync = async (fastify) => {
       });
 
       const candidates = scored
+        .filter(({ profile }) => inLaunchArea(profile.city))
         .slice(0, 20)
         .map(({ profile, distance }) =>
           mapProfileToDiscoverCard(profile, distance)

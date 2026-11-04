@@ -82,6 +82,26 @@ const adminRoutes: FastifyPluginAsync = async (fastify) => {
     };
   });
 
+  // ---- Find a user by email (to get their id for the actions below) ----
+  fastify.get<{ Querystring: { email?: string } }>('/users', async (req, reply) => {
+    const email = req.query.email?.trim().toLowerCase();
+    if (!email) return reply.code(400).send({ ok: false, message: 'Pass ?email=' });
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: {
+        id: true,
+        email: true,
+        isHost: true,
+        bannedAt: true,
+        heldAt: true,
+        createdAt: true,
+        profile: { select: { displayName: true, city: true } },
+      },
+    });
+    if (!user) return reply.code(404).send({ ok: false, message: 'User not found' });
+    return { ok: true, user };
+  });
+
   // ---- Full picture of one user ----
   fastify.get<{ Params: { userId: string } }>('/users/:userId', async (req, reply) => {
     const user = await prisma.user.findUnique({
@@ -151,6 +171,24 @@ const adminRoutes: FastifyPluginAsync = async (fastify) => {
     await unbanUser(req.params.userId);
     return { ok: true };
   });
+
+  // Hosts can schedule room sessions and meetups.
+  fastify.post<{ Params: { userId: string }; Body: { isHost: boolean } }>(
+    '/users/:userId/host',
+    {
+      schema: {
+        body: { type: 'object', required: ['isHost'], properties: { isHost: { type: 'boolean' } } },
+      },
+    },
+    async (req, reply) => {
+      const updated = await prisma.user.updateMany({
+        where: { id: req.params.userId },
+        data: { isHost: req.body.isHost },
+      });
+      if (updated.count === 0) return reply.code(404).send({ ok: false, message: 'User not found' });
+      return { ok: true, isHost: req.body.isHost };
+    }
+  );
 
   fastify.post<{ Params: { userId: string } }>('/users/:userId/release', async (req) => {
     await releaseHold(req.params.userId);

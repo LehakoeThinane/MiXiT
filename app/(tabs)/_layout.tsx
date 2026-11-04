@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Tabs } from 'expo-router';
 import React, { useEffect } from 'react';
 import { Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
@@ -15,6 +16,10 @@ import { useUnreadStore } from '@/stores/unread-store';
 
 export default function TabLayout() {
   const accessToken = useAuthStore((state) => state.accessToken);
+  // Android draws edge-to-edge, so the tab bar must sit above the phone's own
+  // navigation bar (3-button or gesture), whose height varies per device.
+  const insets = useSafeAreaInsets();
+  const bottomInset = Platform.OS === 'ios' ? 0 : insets.bottom;
   const isAuthenticated = Boolean(accessToken);
   const { lastVibesSeenCount, lastChatOpenedAt } = useUnreadStore();
 
@@ -96,8 +101,8 @@ export default function TabLayout() {
           position: 'absolute',
           backgroundColor: 'rgba(11, 13, 24, 0.68)',
           borderTopColor: 'rgba(255,255,255,0.18)',
-          height: Platform.OS === 'ios' ? 84 : 68,
-          paddingBottom: Platform.OS === 'ios' ? 22 : 8,
+          height: (Platform.OS === 'ios' ? 84 : 68) + bottomInset,
+          paddingBottom: (Platform.OS === 'ios' ? 22 : 8) + bottomInset,
           paddingTop: 6,
           borderTopWidth: 1,
         },

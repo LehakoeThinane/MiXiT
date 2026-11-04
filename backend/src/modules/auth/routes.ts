@@ -10,12 +10,13 @@ import { logger } from '../../shared/utils/logger.js';
 import { revokeAppleAuthorization, verifyAppleIdentityToken } from '../../shared/auth/apple.js';
 import { hashToken, signAccessToken, signRefreshToken, verifyRefreshToken } from '../../shared/auth/jwt.js';
 import { invalidateProfileCache } from '../../shared/cache/profile-cache.js';
+import { resolveReferrer } from '../../shared/referrals/referrals.js';
 import { deleteUserStorage } from '../../shared/storage/supabase-storage.js';
 
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-type GoogleSignInBody = { idToken: string; acceptedTerms?: boolean };
-type AppleSignInBody = { identityToken: string; acceptedTerms?: boolean };
+type GoogleSignInBody = { idToken: string; acceptedTerms?: boolean; referralCode?: string };
+type AppleSignInBody = { identityToken: string; acceptedTerms?: boolean; referralCode?: string };
 type DeleteAccountBody = { appleAuthorizationCode?: string };
 type UpdatePhoneBody = { phone: string };
 type RefreshBody = { refreshToken: string };
@@ -28,6 +29,7 @@ const googleSignInSchema = {
     properties: {
       idToken: { type: 'string', minLength: 16 },
       acceptedTerms: { type: 'boolean' },
+      referralCode: { type: 'string', maxLength: 16 },
     },
   },
 } as const;
@@ -39,6 +41,7 @@ const appleSignInSchema = {
     properties: {
       identityToken: { type: 'string', minLength: 16, maxLength: 4096 },
       acceptedTerms: { type: 'boolean' },
+      referralCode: { type: 'string', maxLength: 16 },
     },
   },
 } as const;
@@ -122,8 +125,9 @@ async function findOrCreateUser(input: {
   providerId: string;
   email: string | null;
   acceptedTerms: boolean;
+  referralCode?: string;
 }): Promise<ResolveUserResult> {
-  const { provider, providerId, email, acceptedTerms } = input;
+  const { provider, providerId, email, acceptedTerms, referralCode } = input;
   const byProvider = provider === 'google' ? { googleId: providerId } : { appleId: providerId };
   const termsUpdate = acceptedTerms ? { termsAcceptedAt: new Date() } : {};
 
@@ -169,7 +173,10 @@ async function findOrCreateUser(input: {
         return { ok: false, status: 400, message: 'Please accept the Terms of Use and Privacy Policy to continue.' };
       }
 
-      const user = await prisma.user.create({ data: { ...byProvider, email, ...termsUpdate } });
+      const referredById = await resolveReferrer(referralCode);
+      const user = await prisma.user.create({
+        data: { ...byProvider, email, ...termsUpdate, ...(referredById ? { referredById } : {}) },
+      });
       return { ok: true, user };
     } catch (error) {
       // Double-tap / concurrent retry raced us to create the row — loop once to read it back.
@@ -229,6 +236,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         providerId: payload.sub,
         email: payload.email,
         acceptedTerms: req.body.acceptedTerms === true,
+        referralCode: req.body.referralCode,
       });
       if (!result.ok) return reply.code(result.status).send({ ok: false, message: result.message });
 
@@ -265,6 +273,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         // Apple relay addresses (@privaterelay.appleid.com) are verified too.
         email: identity.email && identity.emailVerified ? identity.email : null,
         acceptedTerms: req.body.acceptedTerms === true,
+        referralCode: req.body.referralCode,
       });
       if (!result.ok) return reply.code(result.status).send({ ok: false, message: result.message });
 
