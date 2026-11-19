@@ -22,6 +22,8 @@ export default defineConfig({
       REDIS_URL: '',
       LOG_LEVEL: 'silent',
       CLIENT_IP_HEADER: 'fly-client-ip',
+      REVIEW_ACCOUNT_EMAIL: 'review-ttl@int.mixit.test',
+      REVIEW_ACCOUNT_PASSWORD: 'integration-review-password',
     },
   },
 });

@@ -21,12 +21,22 @@ type RefreshTokenPayload = {
   exp?: number;
 };
 
+// Every token gets a random `jti`. Without it, two tokens for the same user issued
+// in the same second were byte-identical — and refresh tokens are stored by hash
+// with a UNIQUE constraint, so a second sign-in/refresh within a second failed with
+// a 500 (double-tap, two devices, or two concurrent refreshes).
 export function signAccessToken(sub: string, email: string): string {
-  return jwt.sign({ sub, email, type: 'access' }, env.jwtSecret, { expiresIn: '1h' });
+  return jwt.sign({ sub, email, type: 'access' }, env.jwtSecret, {
+    expiresIn: env.jwtAccessTtlSec,
+    jwtid: crypto.randomUUID(),
+  });
 }
 
 export function signRefreshToken(sub: string): string {
-  return jwt.sign({ sub, type: 'refresh' }, env.jwtSecret, { expiresIn: '30d' });
+  return jwt.sign({ sub, type: 'refresh' }, env.jwtSecret, {
+    expiresIn: env.jwtRefreshTtlSec,
+    jwtid: crypto.randomUUID(),
+  });
 }
 
 export function verifyAccessToken(token: string): AuthenticatedUser {

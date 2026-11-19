@@ -1,8 +1,8 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
 import type { AuthUser } from '@/lib/auth-api';
+import { secureStorage } from '@/lib/secure-storage';
 
 type AuthState = {
   user: AuthUser | null;
@@ -40,7 +40,8 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'MiXiT-auth',
-      storage: createJSONStorage(() => AsyncStorage),
+      // Keychain/Keystore — holds a 30-day refresh token.
+      storage: createJSONStorage(() => secureStorage),
       partialize: (state) => ({
         user: state.user,
         accessToken: state.accessToken,
