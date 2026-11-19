@@ -4,6 +4,7 @@ import { prisma } from '../../shared/db/prisma.js';
 import { getProfileCache, invalidateProfileCache, setProfileCache } from '../../shared/cache/profile-cache.js';
 import { visibleUserFilter } from '../../shared/moderation/actions.js';
 import { isBlockedPair } from '../../shared/moderation/blocks.js';
+import { snapCoordinate } from '../../shared/location/privacy.js';
 import { isOnline } from '../../shared/users/public-identity.js';
 import { checkText, FILTERED_MESSAGE } from '../../shared/moderation/content-filter.js';
 import { rewardReferralOnProfileComplete } from '../../shared/referrals/referrals.js';
@@ -150,8 +151,8 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
           gender: req.body.gender,
           bio: req.body.bio,
           city: req.body.city ?? null,
-          locationLat: req.body.locationLat ?? null,
-          locationLng: req.body.locationLng ?? null,
+          locationLat: snapCoordinate(req.body.locationLat),
+          locationLng: snapCoordinate(req.body.locationLng),
           interests: req.body.interests,
           intents: req.body.intents,
           traits: req.body.traits,
@@ -170,8 +171,8 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
           gender: req.body.gender,
           bio: req.body.bio,
           city: req.body.city ?? null,
-          locationLat: req.body.locationLat ?? null,
-          locationLng: req.body.locationLng ?? null,
+          locationLat: snapCoordinate(req.body.locationLat),
+          locationLng: snapCoordinate(req.body.locationLng),
           interests: req.body.interests,
           intents: req.body.intents,
           traits: req.body.traits,

@@ -14,6 +14,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 
+import { snapCoordinate } from '../src/shared/location/privacy.js';
 import { BOOST_DURATION_MS, ensureSeedProducts } from '../src/modules/payments/routes.js';
 
 if (process.env.NODE_ENV === 'production') {
@@ -106,8 +107,8 @@ async function main() {
             bio: `Into ${pickSome(INTERESTS, 2).join(' and ')}. ${place.city} born and raised.`,
             city: place.city,
             // ~0–5 km jitter around the city centre
-            locationLat: place.lat + (rand() - 0.5) * 0.09,
-            locationLng: place.lng + (rand() - 0.5) * 0.09,
+            locationLat: snapCoordinate(place.lat + (rand() - 0.5) * 0.09),
+            locationLng: snapCoordinate(place.lng + (rand() - 0.5) * 0.09),
             interests: pickSome(INTERESTS, 3 + Math.floor(rand() * 4)),
             intents: pickSome(INTENTS, 1 + Math.floor(rand() * 2)),
             completedAt: new Date(),
