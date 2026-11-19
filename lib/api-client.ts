@@ -76,6 +76,23 @@ type RefreshResponse = {
   };
 };
 
+/**
+ * Refreshes the access token, sharing ONE request between all concurrent callers.
+ *
+ * The server rotates refresh tokens and treats reuse of an already-rotated token
+ * as theft (it revokes every session). Several requests failing with 401 at once —
+ * normal when the app resumes after the 15-minute access token expired — used to
+ * each send the same refresh token, so the second refresh logged the user out.
+ */
+let refreshInFlight: Promise<string | null> | null = null;
+
+export function refreshAccessToken(): Promise<string | null> {
+  refreshInFlight ??= tryRefreshToken().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
 async function tryRefreshToken() {
   const { refreshToken, updateTokens, clearSession } = useAuthStore.getState();
   if (!refreshToken) return null;
@@ -159,7 +176,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
 
   if (auth && response.status === 401 && !_retryAfterRefresh) {
-    const refreshedAccessToken = await tryRefreshToken();
+    const refreshedAccessToken = await refreshAccessToken();
     if (refreshedAccessToken) {
       return apiRequest<T>(path, {
         method,

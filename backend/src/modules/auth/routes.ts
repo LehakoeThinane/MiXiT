@@ -14,7 +14,7 @@ import { invalidateProfileCache } from '../../shared/cache/profile-cache.js';
 import { resolveReferrer } from '../../shared/referrals/referrals.js';
 import { deleteUserStorage } from '../../shared/storage/supabase-storage.js';
 
-const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const refreshTokenTtlMs = () => env.jwtRefreshTtlSec * 1000;
 
 type GoogleSignInBody = { idToken: string; acceptedTerms?: boolean; referralCode?: string };
 type AppleSignInBody = { identityToken: string; acceptedTerms?: boolean; referralCode?: string };
@@ -198,11 +198,11 @@ async function issueTokens(userId: string, email: string, req: FastifyRequest) {
       tokenHash: hashToken(refreshToken),
       userAgent: req.headers['user-agent'] ?? null,
       ipAddress: clientIp(req),
-      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+      expiresAt: new Date(Date.now() + refreshTokenTtlMs()),
     },
   });
 
-  return { accessToken, refreshToken, tokenType: 'bearer', expiresIn: '3600' };
+  return { accessToken, refreshToken, tokenType: 'bearer', expiresIn: String(env.jwtAccessTtlSec) };
 }
 
 const authRoutes: FastifyPluginAsync = async (fastify) => {
@@ -454,7 +454,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
             tokenHash: hashToken(refreshToken),
             userAgent: req.headers['user-agent'] ?? null,
             ipAddress: clientIp(req),
-            expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+            expiresAt: new Date(Date.now() + refreshTokenTtlMs()),
           },
         });
         await prisma.refreshSession.update({
@@ -465,7 +465,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
         return {
           ok: true,
           user: { id: user.id, email: user.email, phone: user.phone },
-          tokens: { accessToken, refreshToken },
+          tokens: { accessToken, refreshToken, tokenType: 'bearer', expiresIn: String(env.jwtAccessTtlSec) },
         };
       } catch {
         return reply.code(401).send({ ok: false, message: 'Refresh token expired' });
