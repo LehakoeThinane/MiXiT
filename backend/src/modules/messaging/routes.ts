@@ -67,7 +67,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
           include: { profile: true },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 200,
     });
 
@@ -111,30 +111,65 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
     return { ok: true, conversations };
   });
 
+  // Newest page first. Older pages: pass the oldest message you have as the cursor
+  // (`before` = its createdAt, `beforeId` = its id). `id` breaks createdAt ties so
+  // pages never overlap or skip. Messages in each page are returned oldest-first.
   fastify.get<{
     Params: { peerUserId: string };
-    Querystring: { limit?: string };
-  }>('/thread/:peerUserId', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    Querystring: { limit?: number; before?: string; beforeId?: string };
+  }>(
+    '/thread/:peerUserId',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        params: {
+          type: 'object',
+          required: ['peerUserId'],
+          properties: { peerUserId: { type: 'string', minLength: 1, maxLength: 36 } },
+        },
+        querystring: {
+          type: 'object',
+          properties: {
+            limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+            before: { type: 'string', format: 'date-time' },
+            beforeId: { type: 'string', minLength: 1, maxLength: 36 },
+          },
+          dependencies: { before: ['beforeId'], beforeId: ['before'] },
+        },
+      },
+    },
+    async (req) => {
     const currentUserId = req.user.sub;
     const peerUserId = req.params.peerUserId;
+    const limit = req.query.limit ?? 50;
+    const before = req.query.before ? new Date(req.query.before) : null;
 
-    if (!peerUserId) {
-      return reply.code(400).send({ ok: false, message: 'Missing peer user id' });
-    }
-
-    const limit = Math.min(Math.max(Number(req.query.limit ?? 50), 1), 100);
-    const messages = await prisma.message.findMany({
+    const page = await prisma.message.findMany({
       where: {
-        OR: [
-          { senderId: currentUserId, recipientId: peerUserId },
-          { senderId: peerUserId, recipientId: currentUserId },
+        AND: [
+          {
+            OR: [
+              { senderId: currentUserId, recipientId: peerUserId },
+              { senderId: peerUserId, recipientId: currentUserId },
+            ],
+          },
+          before
+            ? {
+                OR: [
+                  { createdAt: { lt: before } },
+                  { createdAt: before, id: { lt: req.query.beforeId } },
+                ],
+              }
+            : {},
         ],
       },
-      orderBy: { createdAt: 'asc' },
-      take: limit,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1, // one extra row tells us whether an older page exists
     });
+    const hasMore = page.length > limit;
+    const messages = page.slice(0, limit).reverse();
 
-    // Mark unread incoming messages as read
+    // Mark unread incoming messages in this page as read
     const unreadIds = messages
       .filter((m) => m.recipientId === currentUserId && !m.readAt)
       .map((m) => m.id);
@@ -148,8 +183,9 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       io?.to(`user:${peerUserId}`).emit('message:read', { byUserId: currentUserId, messageIds: unreadIds });
     }
 
-    return { ok: true, messages: await toClientMessages(messages) };
-  });
+    return { ok: true, messages: await toClientMessages(messages), hasMore };
+    }
+  );
 
   fastify.post<{
     Body: SendMessageBody;
