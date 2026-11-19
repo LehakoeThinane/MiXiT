@@ -4,6 +4,7 @@ import { prisma } from '../../shared/db/prisma.js';
 import { sendDirectMessage, toClientMessages } from '../../shared/messaging/direct-messages.js';
 import { getBlockedUserIds } from '../../shared/moderation/blocks.js';
 import { getSocketServer } from '../../shared/realtime/socket.js';
+import { publicIdentity } from '../../shared/users/public-identity.js';
 import { createSignedChatMediaUrl } from '../../shared/storage/supabase-storage.js';
 
 type SendMessageBody = {
@@ -19,6 +20,12 @@ function formatPreview(type: string, content: string | null) {
   if (content && content.trim().length > 0) return content.trim();
   return 'Start the conversation';
 }
+
+const peerSelect = {
+  id: true,
+  bannedAt: true,
+  profile: { select: { displayName: true, lastActive: true, showLastSeen: true } },
+} as const;
 
 const messagingRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
@@ -59,13 +66,10 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       where: {
         OR: [{ senderId: currentUserId }, { recipientId: currentUserId }],
       },
+      // Only what the list shows — never load (or risk returning) email/phone.
       include: {
-        sender: {
-          include: { profile: true },
-        },
-        recipient: {
-          include: { profile: true },
-        },
+        sender: { select: peerSelect },
+        recipient: { select: peerSelect },
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 200,
@@ -89,21 +93,17 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
     for (const message of messages) {
       const isMine = message.senderId === currentUserId;
       const peer = isMine ? message.recipient : message.sender;
-      const peerProfile = peer.profile;
-
       if (seenPeerIds.has(peer.id) || blockedUserIds.has(peer.id) || peer.bannedAt) continue;
       seenPeerIds.add(peer.id);
+      const identity = publicIdentity(peer.id, peer.profile);
 
       conversations.push({
         id: peer.id,
-        name: peerProfile?.displayName ?? peer.email,
-        initial: (peerProfile?.displayName ?? peer.email).slice(0, 1).toUpperCase(),
+        name: identity.displayName,
+        initial: identity.initial,
         preview: formatPreview(message.type, message.content),
         lastMessageAt: message.createdAt.toISOString(),
-        online:
-          peerProfile?.lastActive !== null && peerProfile?.lastActive !== undefined
-            ? Date.now() - peerProfile.lastActive.getTime() <= 5 * 60 * 1000
-            : false,
+        online: identity.online,
         unread: unreadPeerIds.has(peer.id),
       });
     }
@@ -183,7 +183,11 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
       io?.to(`user:${peerUserId}`).emit('message:read', { byUserId: currentUserId, messageIds: unreadIds });
     }
 
-    return { ok: true, messages: await toClientMessages(messages), hasMore };
+    // Who the chat is with, so the app never needs names in the URL.
+    const peer = await prisma.user.findUnique({ where: { id: peerUserId }, select: peerSelect });
+    const peerIdentity = publicIdentity(peerUserId, peer && !peer.bannedAt ? peer.profile : null);
+
+    return { ok: true, messages: await toClientMessages(messages), hasMore, peer: peerIdentity };
     }
   );
 

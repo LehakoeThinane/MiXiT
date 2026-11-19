@@ -30,9 +30,13 @@ type ThreadResponse = {
   ok: boolean;
   messages: ThreadMessage[];
   hasMore: boolean;
+  peer?: PeerIdentity;
 };
 
-export type ThreadPage = { messages: ThreadMessage[]; hasMore: boolean };
+/** Public identity of the person a chat is with (never email/phone). */
+export type PeerIdentity = { id: string; displayName: string; initial: string; online: boolean };
+
+export type ThreadPage = { messages: ThreadMessage[]; hasMore: boolean; peer: PeerIdentity | null };
 
 type SendMessageResponse = {
   ok: boolean;
@@ -53,7 +57,7 @@ export async function getThreadPage(peerUserId: string, olderThan?: Pick<ThreadM
     ? `?before=${encodeURIComponent(olderThan.createdAt)}&beforeId=${encodeURIComponent(olderThan.id)}`
     : '';
   const response = await apiRequest<ThreadResponse>(`/messaging/thread/${peerUserId}${query}`, { auth: true });
-  return { messages: response.messages, hasMore: response.hasMore ?? false };
+  return { messages: response.messages, hasMore: response.hasMore ?? false, peer: response.peer ?? null };
 }
 
 /** Chronological order with a deterministic tiebreaker — matches the server. */
