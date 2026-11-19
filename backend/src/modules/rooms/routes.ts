@@ -126,11 +126,29 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.get<{
     Params: { roomId: string };
-    Querystring: { before?: string; limit?: string };
-  }>('/:roomId/messages', { preHandler: [fastify.authenticate] }, async (req, reply) => {
+    Querystring: { before?: string; beforeId?: string; limit?: number };
+  }>(
+    '/:roomId/messages',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+            before: { type: 'string', format: 'date-time' },
+            // Optional tiebreaker: the id of the oldest message you have.
+            beforeId: { type: 'string', minLength: 1, maxLength: 36 },
+          },
+          dependencies: { beforeId: ['before'] },
+        },
+      },
+    },
+    async (req, reply) => {
     const { roomId } = req.params;
-    const limit = Math.min(Number(req.query.limit ?? 50), 100);
+    const limit = req.query.limit ?? 50;
     const before = req.query.before ? new Date(req.query.before) : undefined;
+    const beforeId = req.query.beforeId;
 
     const room = await prisma.room.findUnique({ where: { id: roomId }, select: { id: true } });
     if (!room) return reply.code(404).send({ ok: false, message: 'Room not found' });
@@ -141,7 +159,11 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
         roomId,
         userId: { notIn: Array.from(blockedUserIds) },
         user: visibleUserFilter,
-        ...(before ? { createdAt: { lt: before } } : {}),
+        ...(before && beforeId
+          ? { OR: [{ createdAt: { lt: before } }, { createdAt: before, id: { lt: beforeId } }] }
+          : before
+            ? { createdAt: { lt: before } }
+            : {}),
       },
       include: {
         user: {
@@ -150,7 +172,7 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
           },
         },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit,
     });
 
@@ -165,7 +187,8 @@ const roomsRoutes: FastifyPluginAsync = async (fastify) => {
         createdAt: m.createdAt.toISOString(),
       })),
     };
-  });
+    }
+  );
 
   fastify.post<{
     Params: { roomId: string };

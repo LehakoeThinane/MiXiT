@@ -20,7 +20,7 @@ Status: ⬜ not started · 🟡 in progress · ✅ done · ⏸ blocked on owner 
 
 | Finding | Where | Priority |
 |---|---|---|
-| Socket connect race: `message:send` and other handlers are registered **after** two awaited DB queries, so events sent right after connecting are silently dropped. Reproduced: 70 sends immediately after connect gave 0 deliveries. | `shared/realtime/socket.ts` `io.on('connection')` | P0 (add to 1.2) |
+| Socket connect race: `message:send` and other handlers are registered **after** two awaited DB queries, so events sent right after connecting are silently dropped. Reproduced: 70 sends immediately after connect gave 0 deliveries. | `shared/realtime/socket.ts` `io.on('connection')` | ✅ fixed in 1.2 |
 | No working sign-in on the **web** build: `@react-native-google-signin` (free tier) throws "Web support is only available to sponsors", and Apple sign-in is native-only. PayFast is web-only, so web purchases are unreachable. | `app/(tabs)/index.tsx` `handleGoogleSignIn` | P0 if web ships (§11) |
 | Web bundle crashed with `import.meta` (zustand devtools ESM) and showed an endless spinner. | Fixed by `babel.config.js` (Phase 0 PR) | ✅ |
 | Onboarding shows "Step 1 of 7", but step 2 doesn't exist and step 7 is a confirmation screen. There are 4 real input screens. | `app/(tabs)/index.tsx` | Phase 5 |
@@ -42,8 +42,8 @@ Session fixes written before the brief are in the working tree, **uncommitted**.
 
 | Item | Status | PR | Notes |
 |---|---|---|---|
-| 1.1 DM thread oldest-50 | 🟡 | | Newest-50 ordering done. Still to do: `id` tiebreaker, cursor pagination plus "load earlier", read-marking scope, integration test. |
-| 1.2 Socket rate limit / typing blocks | 🟡 | | Per-process 60/min limiter on `message:send` with unit tests. Still to do: Redis-backed budget shared with REST, typing block checks and throttling, payload validation, connect-race fix. |
+| 1.1 DM thread oldest-50 | ✅ | | Newest page first with `(createdAt, id)` cursor (`before` + `beforeId`) and `hasMore`. Query validation (400, not 500). `id` tiebreaker on DM thread, conversation list and room messages (rooms also take an optional `beforeId`). Mark-as-read is scoped to the returned page; it stays on GET (moving it to a POST is deferred so the client changes stay small). App: "Load earlier messages" on scroll-to-top with the scroll position kept, refetches keep earlier pages, and socket/REST echoes are de-duplicated. New integration test layer (`pnpm run test:integration`, in CI): 10 tests, all failing on the old code. Verified in the web build against the 130-message seed thread. |
+| 1.2 Socket rate limit / typing blocks | ✅ | | `shared/rate-limit/user-budget.ts`: per-user fixed-window budgets in Redis (atomic INCR+PEXPIRE script), with an in-memory fallback when Redis is down (not fail-open). DM budget of 60/min is spent inside `sendDirectMessage`, so REST and socket share it; REST returns 429 and socket emits `message:error`. The per-IP limit on `POST /messaging/messages` was replaced by this per-user one. Typing: 30 events per 10 s per user, dropped between blocked users (30 s cache, cleared on block/unblock). All socket payloads go through hand-written guards. **Connect race fixed:** handlers are registered before any await. Tests: 7 socket integration tests (all fail on the old code) plus 26 unit tests. |
 | 1.3 `trustProxy` | 🟡 | | `trustProxy: true` set and verified (proxy IP recorded correctly). Still to do: per-host value, `keyGenerator` by user ID, test. |
 | 1.4 Email leak | ⬜ | | Verified: `conversations` falls back to `peer.email`; chat route carries `name`, `initial` and `online` in the URL. |
 | 1.5 Exact distances | ⬜ | | |
@@ -54,6 +54,16 @@ Session fixes written before the brief are in the working tree, **uncommitted**.
 | 1.10 Graceful shutdown | ⬜ | | |
 | 1.11 CORS | ⬜ | | |
 
+## Owner decisions (§11)
+
+| # | Question | Decision (2026-11-19) |
+|---|---|---|
+| 1 | Hosting | **Fly.io `jnb`.** Remove Render and Railway configs in Phase 2. |
+| 2 | Instances at launch | **1 instance + Redis.** |
+| 4 | Web auth model | **Mobile-only launch.** Web is for local testing only, so web token hardening and web Google sign-in are out of scope for now. |
+| 6 | Held recipients | **Reject** (sender gets "Recipient not found", same as banned). |
+| 3, 5, 7–10 | Discover preferences, deleted-account messages, perf targets, retention, POPIA, monitoring budget | Open |
+
 ## Phases 2–8
 
-Not started. Blocked on owner decisions: hosting (§11 Q1) gates all of Phase 2, and instance count (Q2) gates 2.4 and 2.5.
+Not started. Phase 2 now targets Fly.io `jnb` with 1 instance plus Redis.

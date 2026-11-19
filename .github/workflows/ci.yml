@@ -100,6 +100,10 @@ jobs:
       - name: Apply migrations to a fresh database
         run: pnpm exec prisma migrate deploy
 
+      # Real Fastify app (fastify.inject) against the freshly migrated Postgres above.
+      - name: Integration tests
+        run: pnpm run test:integration
+
       # Fails if schema.prisma has changes with no migration (or vice versa):
       # compares the freshly migrated database against the Prisma schema.
       - name: Check schema and migrations are in sync

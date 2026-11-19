@@ -3,8 +3,22 @@ import { Audio } from 'expo-av';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ActionSheet, type ActionSheetOption } from '@/components/action-sheet';
@@ -15,7 +29,15 @@ import { blockUser } from '@/lib/moderation-api';
 import { registerForPushNotifications } from '@/lib/notifications';
 import { mentionsMoney } from '@/lib/safety';
 import { compressImage } from '@/lib/media';
-import { getThreadMessages, requestMediaUploadUrl, sendMessage, type ThreadMessage, uploadMediaToStorage } from '@/lib/messaging-api';
+import {
+  compareMessages,
+  getThreadPage,
+  mergeMessages,
+  requestMediaUploadUrl,
+  sendMessage,
+  type ThreadMessage,
+  uploadMediaToStorage,
+} from '@/lib/messaging-api';
 import { getSocket } from '@/lib/socket-client';
 import { useAuthStore } from '@/stores/auth-store';
 import { useSettingsStore } from '@/stores/settings-store';
@@ -55,14 +77,63 @@ export default function ChatScreen() {
   const [loadedImageIds, setLoadedImageIds] = useState<Set<string>>(() => new Set());
   const askedForPushRef = useRef(false);
 
+  // Older pages loaded with "load earlier" live in the same cache entry. A refetch
+  // only replaces the newest page and keeps anything older the user already loaded.
+  const [hasEarlier, setHasEarlier] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const threadQuery = useQuery({
     queryKey: ['thread', peerUserId],
-    queryFn: () => getThreadMessages(peerUserId),
+    queryFn: async () => {
+      const page = await getThreadPage(peerUserId);
+      const cached = queryClient.getQueryData<ThreadMessage[]>(['thread', peerUserId]) ?? [];
+      const oldestInPage = page.messages[0];
+      const older =
+        page.hasMore && oldestInPage ? cached.filter((m) => compareMessages(m, oldestInPage) < 0) : [];
+      if (older.length === 0) setHasEarlier(page.hasMore);
+      return mergeMessages(older, page.messages);
+    },
     enabled: Boolean(accessToken && peerUserId),
     staleTime: 5_000,
   });
 
-  const messages = threadQuery.data ?? [];
+  const messages = useMemo(() => threadQuery.data ?? [], [threadQuery.data]);
+
+  // Scroll bookkeeping: keep the reader's place when older messages are prepended.
+  const scrollYRef = useRef(0);
+  const contentHeightRef = useRef(0);
+  const prependAnchorRef = useRef<{ height: number; y: number } | null>(null);
+
+  const loadEarlier = useCallback(async () => {
+    const oldest = messages[0];
+    if (!hasEarlier || loadingEarlier || !oldest) return;
+    setLoadingEarlier(true);
+    try {
+      const page = await getThreadPage(peerUserId, oldest);
+      prependAnchorRef.current = { height: contentHeightRef.current, y: scrollYRef.current };
+      queryClient.setQueryData<ThreadMessage[]>(['thread', peerUserId], (current) =>
+        mergeMessages(page.messages, current ?? [])
+      );
+      setHasEarlier(page.hasMore);
+    } catch {
+      // Leave hasEarlier as-is so the user can retry by scrolling up again.
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [hasEarlier, loadingEarlier, messages, peerUserId, queryClient]);
+
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollYRef.current = event.nativeEvent.contentOffset.y;
+    if (scrollYRef.current < 80) void loadEarlier();
+  };
+
+  const handleContentSizeChange = (_width: number, height: number) => {
+    const anchor = prependAnchorRef.current;
+    if (anchor) {
+      prependAnchorRef.current = null;
+      scrollRef.current?.scrollTo({ y: height - anchor.height + anchor.y, animated: false });
+    }
+    contentHeightRef.current = height;
+  };
   const peerName = params.name ?? 'MiXiT user';
   const peerInitial = (params.initial ?? 'M').slice(0, 1).toUpperCase();
   const peerOnline = params.online === '1';
@@ -76,11 +147,7 @@ export default function ChatScreen() {
       }),
     onSuccess: async (message) => {
       setDraft('');
-      queryClient.setQueryData<ThreadMessage[]>(['thread', peerUserId], (current) => {
-        const existing = current ?? [];
-        if (existing.some((item) => item.id === message.id)) return existing;
-        return [...existing, message];
-      });
+      queryClient.setQueryData<ThreadMessage[]>(['thread', peerUserId], (current) => mergeMessages(current ?? [], [message]));
       await queryClient.invalidateQueries({ queryKey: ['conversations'] });
       // Ask for notification permission in context — right after the first message sent.
       if (!askedForPushRef.current) {
@@ -147,11 +214,7 @@ export default function ChatScreen() {
       ) {
         return;
       }
-      queryClient.setQueryData<ThreadMessage[]>(['thread', peerUserId], (current) => {
-        const existing = current ?? [];
-        if (existing.some((item) => item.id === message.id)) return existing;
-        return [...existing, message];
-      });
+      queryClient.setQueryData<ThreadMessage[]>(['thread', peerUserId], (current) => mergeMessages(current ?? [], [message]));
       void queryClient.invalidateQueries({ queryKey: ['conversations'] });
     };
 
@@ -337,11 +400,12 @@ export default function ChatScreen() {
     if (peerUserId) markChatOpened(peerUserId);
   }, [peerUserId, markChatOpened]);
 
+  // Follow the conversation only when a new message arrives at the bottom —
+  // not when older pages are prepended at the top.
+  const lastMessageId = messages.at(-1)?.id;
   useEffect(() => {
-    if (messages.length > 0) {
-      scrollRef.current?.scrollToEnd({ animated: false });
-    }
-  }, [messages.length]);
+    if (lastMessageId) scrollRef.current?.scrollToEnd({ animated: false });
+  }, [lastMessageId]);
 
   // Scam warning when the other person brings up money, vouchers, crypto, OTPs…
   const showScamWarning =
@@ -405,7 +469,26 @@ export default function ChatScreen() {
         </View>
       ) : null}
 
-      <ScrollView ref={scrollRef} contentContainerStyle={styles.messages}>
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.messages}
+        onScroll={handleScroll}
+        scrollEventThrottle={100}
+        onContentSizeChange={handleContentSizeChange}>
+        {hasEarlier ? (
+          <Pressable
+            style={styles.loadEarlier}
+            onPress={() => void loadEarlier()}
+            disabled={loadingEarlier}
+            accessibilityRole="button"
+            accessibilityLabel="Load earlier messages">
+            {loadingEarlier ? (
+              <ActivityIndicator size="small" color="#ff6b35" />
+            ) : (
+              <Text style={styles.loadEarlierText}>Load earlier messages</Text>
+            )}
+          </Pressable>
+        ) : null}
         {threadQuery.isLoading ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>Loading messages...</Text>
@@ -603,6 +686,19 @@ const styles = StyleSheet.create({
     color: '#65efc1',
     fontWeight: '600',
     fontSize: 13,
+  },
+  loadEarlier: {
+    alignSelf: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+    minHeight: 32,
+    justifyContent: 'center',
+  },
+  loadEarlierText: {
+    color: '#ff9b73',
+    fontSize: 13,
+    fontWeight: '600',
   },
   messages: {
     flexGrow: 1,

@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
 import { applyAutoHold, notifyModerators } from '../../shared/moderation/actions.js';
+import { forgetBlockedPair } from '../../shared/moderation/blocks.js';
 
 const REPORT_REASONS = ['inappropriate_content', 'harassment', 'fake_profile', 'spam', 'underage', 'other'];
 
@@ -31,6 +32,7 @@ const moderationRoutes: FastifyPluginAsync = async (fastify) => {
         create: { blockerId, blockedId },
         update: {},
       });
+      forgetBlockedPair(blockerId, blockedId);
 
       return { ok: true };
     }
@@ -43,6 +45,7 @@ const moderationRoutes: FastifyPluginAsync = async (fastify) => {
       await prisma.block.deleteMany({
         where: { blockerId: req.user.sub, blockedId: req.params.userId },
       });
+      forgetBlockedPair(req.user.sub, req.params.userId);
       return { ok: true };
     }
   );
