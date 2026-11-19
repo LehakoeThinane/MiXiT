@@ -4,6 +4,7 @@ import { prisma } from '../../shared/db/prisma.js';
 import { getProfileCache, invalidateProfileCache, setProfileCache } from '../../shared/cache/profile-cache.js';
 import { visibleUserFilter } from '../../shared/moderation/actions.js';
 import { isBlockedPair } from '../../shared/moderation/blocks.js';
+import { isOnline } from '../../shared/users/public-identity.js';
 import { checkText, FILTERED_MESSAGE } from '../../shared/moderation/content-filter.js';
 import { rewardReferralOnProfileComplete } from '../../shared/referrals/referrals.js';
 import {
@@ -233,6 +234,7 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
           voiceIntroUrl: true,
           voiceIntroDurationSec: true,
           lastActive: true,
+          showLastSeen: true,
           completedAt: true,
         },
       });
@@ -241,7 +243,17 @@ const profileRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.code(404).send({ ok: false, message: 'Profile not found' });
       }
 
-      return { ok: true, profile };
+      // Honour "show last seen": hidden users expose neither a timestamp nor online status.
+      const { showLastSeen, lastActive, ...visible } = profile;
+      const isSelf = userId === req.user.sub;
+      return {
+        ok: true,
+        profile: {
+          ...visible,
+          lastActive: showLastSeen || isSelf ? lastActive : null,
+          online: isOnline({ lastActive, showLastSeen }),
+        },
+      };
     }
   );
 

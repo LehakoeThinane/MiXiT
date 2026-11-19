@@ -82,12 +82,7 @@ export default function ChatsScreen() {
                 onPress={() =>
                   router.push({
                     pathname: '/chat/[id]',
-                    params: {
-                      id: conversation.id,
-                      name: conversation.name,
-                      initial: conversation.initial,
-                      online: conversation.online ? '1' : '0',
-                    },
+                    params: { id: conversation.id },
                   })
                 }>
                 <View style={[styles.statusDot, { backgroundColor: status.color }]} />

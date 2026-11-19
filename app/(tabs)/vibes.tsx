@@ -64,12 +64,7 @@ export default function VibesScreen() {
               onPress={() =>
                 router.push({
                   pathname: '/chat/[id]',
-                  params: {
-                    id: profile.id,
-                    name: profile.name,
-                    initial: profile.initial,
-                    online: profile.online ? '1' : '0',
-                  },
+                  params: { id: profile.id },
                 })
               }>
               <View style={styles.avatar}>

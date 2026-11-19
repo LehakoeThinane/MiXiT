@@ -31,7 +31,9 @@ import { mentionsMoney } from '@/lib/safety';
 import { compressImage } from '@/lib/media';
 import {
   compareMessages,
+  type ConversationSummary,
   getThreadPage,
+  type PeerIdentity,
   mergeMessages,
   requestMediaUploadUrl,
   sendMessage,
@@ -52,7 +54,7 @@ function formatTime(value: string) {
 export default function ChatScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const params = useLocalSearchParams<{ id?: string; name?: string; initial?: string; online?: string }>();
+  const params = useLocalSearchParams<{ id?: string }>();
   const peerUserId = params.id ?? '';
   const { user, accessToken } = useAuthStore();
   const markChatOpened = useUnreadStore((state) => state.markChatOpened);
@@ -81,10 +83,12 @@ export default function ChatScreen() {
   // only replaces the newest page and keeps anything older the user already loaded.
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [peer, setPeer] = useState<PeerIdentity | null>(null);
   const threadQuery = useQuery({
     queryKey: ['thread', peerUserId],
     queryFn: async () => {
       const page = await getThreadPage(peerUserId);
+      if (page.peer) setPeer(page.peer);
       const cached = queryClient.getQueryData<ThreadMessage[]>(['thread', peerUserId]) ?? [];
       const oldestInPage = page.messages[0];
       const older =
@@ -134,9 +138,18 @@ export default function ChatScreen() {
     }
     contentHeightRef.current = height;
   };
-  const peerName = params.name ?? 'MiXiT user';
-  const peerInitial = (params.initial ?? 'M').slice(0, 1).toUpperCase();
-  const peerOnline = params.online === '1';
+  // Who we're chatting with comes from the API (never from the URL, which used to
+  // carry names and could carry emails). Until the thread loads, use the chat
+  // list's cached entry if we came from there.
+  const cachedConversation = queryClient
+    .getQueryData<ConversationSummary[]>(['conversations'])
+    ?.find((conversation) => conversation.id === peerUserId);
+  const identity = peer ?? (cachedConversation
+    ? { displayName: cachedConversation.name, initial: cachedConversation.initial, online: cachedConversation.online }
+    : null);
+  const peerName = identity?.displayName ?? '';
+  const peerInitial = identity?.initial ?? '';
+  const peerOnline = identity?.online ?? false;
 
   const sendMutation = useMutation({
     mutationFn: async (content: string) =>
@@ -178,7 +191,7 @@ export default function ChatScreen() {
   const openPeerProfile = () =>
     router.push({
       pathname: '/profile/[id]',
-      params: { id: peerUserId, name: peerName, initial: peerInitial, online: params.online ?? '0' },
+      params: { id: peerUserId },
     });
 
   const chatMenuOptions: ActionSheetOption[] = [
@@ -433,7 +446,7 @@ export default function ChatScreen() {
           onPress={() =>
             router.push({
               pathname: '/profile/[id]',
-              params: { id: peerUserId, name: peerName, initial: peerInitial, online: params.online ?? '0' },
+              params: { id: peerUserId },
             })
           }>
           <View style={styles.avatar}>

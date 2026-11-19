@@ -332,12 +332,7 @@ export default function DiscoverScreen() {
                 onChat={() =>
                   router.push({
                     pathname: '/chat/[id]',
-                    params: {
-                      id: item.id,
-                      name: item.name,
-                      initial: item.initial,
-                      online: item.online ? '1' : '0',
-                    },
+                    params: { id: item.id },
                   })
                 }
               />
@@ -374,12 +369,7 @@ export default function DiscoverScreen() {
                 if (id && matchProfile) {
                   router.push({
                     pathname: '/chat/[id]',
-                    params: {
-                      id,
-                      name: matchProfile.name,
-                      initial: matchProfile.initial,
-                      online: matchProfile.online ? '1' : '0',
-                    },
+                    params: { id },
                   });
                 }
               }}>
