@@ -29,7 +29,10 @@ type ConversationsResponse = {
 type ThreadResponse = {
   ok: boolean;
   messages: ThreadMessage[];
+  hasMore: boolean;
 };
+
+export type ThreadPage = { messages: ThreadMessage[]; hasMore: boolean };
 
 type SendMessageResponse = {
   ok: boolean;
@@ -41,9 +44,28 @@ export async function getConversations() {
   return response.conversations;
 }
 
-export async function getThreadMessages(peerUserId: string) {
-  const response = await apiRequest<ThreadResponse>(`/messaging/thread/${peerUserId}`, { auth: true });
-  return response.messages;
+/**
+ * One page of a DM thread, oldest-first. With no cursor this is the newest page;
+ * pass the oldest message you already have to load the page before it.
+ */
+export async function getThreadPage(peerUserId: string, olderThan?: Pick<ThreadMessage, 'id' | 'createdAt'>): Promise<ThreadPage> {
+  const query = olderThan
+    ? `?before=${encodeURIComponent(olderThan.createdAt)}&beforeId=${encodeURIComponent(olderThan.id)}`
+    : '';
+  const response = await apiRequest<ThreadResponse>(`/messaging/thread/${peerUserId}${query}`, { auth: true });
+  return { messages: response.messages, hasMore: response.hasMore ?? false };
+}
+
+/** Chronological order with a deterministic tiebreaker — matches the server. */
+export function compareMessages(a: Pick<ThreadMessage, 'id' | 'createdAt'>, b: Pick<ThreadMessage, 'id' | 'createdAt'>) {
+  return a.createdAt === b.createdAt ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.createdAt < b.createdAt ? -1 : 1;
+}
+
+/** Merges message lists, dropping duplicates (socket echo vs REST response) and keeping order. */
+export function mergeMessages(...lists: ThreadMessage[][]): ThreadMessage[] {
+  const byId = new Map<string, ThreadMessage>();
+  for (const list of lists) for (const message of list) byId.set(message.id, { ...byId.get(message.id), ...message });
+  return [...byId.values()].sort(compareMessages);
 }
 
 export async function requestMediaUploadUrl(filename: string, mimeType: string) {

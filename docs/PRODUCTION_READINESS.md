@@ -42,7 +42,7 @@ Session fixes written before the brief are in the working tree, **uncommitted**.
 
 | Item | Status | PR | Notes |
 |---|---|---|---|
-| 1.1 DM thread oldest-50 | 🟡 | | Newest-50 ordering done. Still to do: `id` tiebreaker, cursor pagination plus "load earlier", read-marking scope, integration test. |
+| 1.1 DM thread oldest-50 | ✅ | | Newest page first with `(createdAt, id)` cursor (`before` + `beforeId`) and `hasMore`. Query validation (400, not 500). `id` tiebreaker on DM thread, conversation list and room messages (rooms also take an optional `beforeId`). Mark-as-read is scoped to the returned page; it stays on GET (moving it to a POST is deferred so the client changes stay small). App: "Load earlier messages" on scroll-to-top with the scroll position kept, refetches keep earlier pages, and socket/REST echoes are de-duplicated. New integration test layer (`pnpm run test:integration`, in CI): 10 tests, all failing on the old code. Verified in the web build against the 130-message seed thread. |
 | 1.2 Socket rate limit / typing blocks | 🟡 | | Per-process 60/min limiter on `message:send` with unit tests. Still to do: Redis-backed budget shared with REST, typing block checks and throttling, payload validation, connect-race fix. |
 | 1.3 `trustProxy` | 🟡 | | `trustProxy: true` set and verified (proxy IP recorded correctly). Still to do: per-host value, `keyGenerator` by user ID, test. |
 | 1.4 Email leak | ⬜ | | Verified: `conversations` falls back to `peer.email`; chat route carries `name`, `initial` and `online` in the URL. |
@@ -54,6 +54,16 @@ Session fixes written before the brief are in the working tree, **uncommitted**.
 | 1.10 Graceful shutdown | ⬜ | | |
 | 1.11 CORS | ⬜ | | |
 
+## Owner decisions (§11)
+
+| # | Question | Decision (2026-11-19) |
+|---|---|---|
+| 1 | Hosting | **Fly.io `jnb`.** Remove Render and Railway configs in Phase 2. |
+| 2 | Instances at launch | **1 instance + Redis.** |
+| 4 | Web auth model | **Mobile-only launch.** Web is for local testing only, so web token hardening and web Google sign-in are out of scope for now. |
+| 6 | Held recipients | **Reject** (sender gets "Recipient not found", same as banned). |
+| 3, 5, 7–10 | Discover preferences, deleted-account messages, perf targets, retention, POPIA, monitoring budget | Open |
+
 ## Phases 2–8
 
-Not started. Blocked on owner decisions: hosting (§11 Q1) gates all of Phase 2, and instance count (Q2) gates 2.4 and 2.5.
+Not started. Phase 2 now targets Fly.io `jnb` with 1 instance plus Redis.
