@@ -22,7 +22,7 @@ describe('access-token refresh', () => {
 
     // Simulates the server: rotates refresh tokens and treats reuse as theft.
     let currentRefresh = 'refresh-1';
-    global.fetch = jest.fn((url: string, init?: RequestInit) => {
+    globalThis.fetch = jest.fn((url: string, init?: RequestInit) => {
       if (url.endsWith('/auth/refresh')) {
         const sent = JSON.parse(String(init?.body)).refreshToken as string;
         refreshCalls.push(sent);
