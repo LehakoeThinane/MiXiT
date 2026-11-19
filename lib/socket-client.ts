@@ -1,23 +1,39 @@
 import { io, type Socket } from 'socket.io-client';
 
-import { API_BASE_URL } from '@/lib/api-client';
+import { API_BASE_URL, refreshAccessToken } from '@/lib/api-client';
+import { useAuthStore } from '@/stores/auth-store';
 
 let socket: Socket | null = null;
-let connectedToken: string | null = null;
+let refreshingAfterReject = false;
 
-export function connectSocket(accessToken: string) {
-  if (socket?.connected && connectedToken === accessToken) return socket;
+/**
+ * Opens the realtime connection for the signed-in user. One socket per session:
+ * access-token refreshes don't reconnect it, because the server only checks the
+ * token at the handshake.
+ */
+export function connectSocket() {
+  if (socket) return socket;
 
-  if (socket) {
-    socket.disconnect();
-    socket = null;
-  }
-
-  connectedToken = accessToken;
   socket = io(API_BASE_URL, {
     transports: ['websocket', 'polling'],
-    auth: { token: accessToken },
+    // A function, so every (re)connect sends the CURRENT access token. With
+    // 15-minute tokens, a fixed token would be expired by the next reconnect.
+    auth: (send) => send({ token: useAuthStore.getState().accessToken }),
   });
+
+  // The server rejects expired tokens with "Unauthorized", and Socket.IO does not
+  // retry after a rejection by the server — so refresh the token and reconnect once.
+  socket.on('connect_error', async (error) => {
+    if (error.message !== 'Unauthorized' || refreshingAfterReject) return;
+    refreshingAfterReject = true;
+    try {
+      const token = await refreshAccessToken();
+      if (token && socket) socket.connect();
+    } finally {
+      refreshingAfterReject = false;
+    }
+  });
+
   return socket;
 }
 
@@ -29,6 +45,5 @@ export function disconnectSocket() {
   if (socket) {
     socket.disconnect();
     socket = null;
-    connectedToken = null;
   }
 }

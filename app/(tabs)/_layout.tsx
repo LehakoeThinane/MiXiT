@@ -49,9 +49,12 @@ export default function TabLayout() {
     ? currentVibesCount
     : Math.max(0, currentVibesCount - lastVibesSeenCount);
 
+  // Keyed on signed-in state, not the token: refreshing the 15-minute access token
+  // must not tear down and reopen the realtime connection.
+  const isSignedIn = Boolean(accessToken);
   useEffect(() => {
-    if (accessToken) {
-      connectSocket(accessToken);
+    if (isSignedIn) {
+      connectSocket();
       registerForPushNotifications();
     } else {
       disconnectSocket();
@@ -60,10 +63,10 @@ export default function TabLayout() {
       // only disconnect when layout unmounts (app close / sign-out navigation)
       disconnectSocket();
     };
-  }, [accessToken]);
+  }, [isSignedIn]);
 
   useEffect(() => {
-    if (!accessToken) return;
+    if (!isSignedIn) return;
     const socket = getSocket();
     if (!socket) return;
 
@@ -88,7 +91,7 @@ export default function TabLayout() {
       socket.off('typing:stop', onTypingStop);
       Object.values(clearTimers).forEach(clearTimeout);
     };
-  }, [accessToken]);
+  }, [isSignedIn]);
   return (
     <Tabs
       initialRouteName="discover"

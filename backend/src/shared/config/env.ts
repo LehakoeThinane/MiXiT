@@ -1,5 +1,7 @@
 import 'dotenv/config';
 
+import { parseDurationSeconds } from './duration.js';
+
 function validateDatabaseUrl(input: string) {
   const value = input.trim();
 
@@ -97,6 +99,16 @@ export const env = {
   supabaseAnonKey: process.env.SUPABASE_ANON_KEY?.trim() ?? '',
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? '',
   jwtSecret: validateJwtSecret(process.env.JWT_SECRET, nodeEnv),
+  // Token lifetimes in seconds. Short access tokens limit the damage of a leaked
+  // token; the app refreshes them silently with the long-lived refresh token.
+  jwtAccessTtlSec: parseDurationSeconds('JWT_ACCESS_TTL', process.env.JWT_ACCESS_TTL, '15m', {
+    minSeconds: 60,
+    maxSeconds: 24 * 3600,
+  }),
+  jwtRefreshTtlSec: parseDurationSeconds('JWT_REFRESH_TTL', process.env.JWT_REFRESH_TTL, '30d', {
+    minSeconds: 3600,
+    maxSeconds: 365 * 86_400,
+  }),
   publicApiUrl: validatePublicApiUrl(process.env.PUBLIC_API_URL ?? ''),
   payfastMerchantId: process.env.PAYFAST_MERCHANT_ID?.trim() ?? '',
   payfastMerchantKey: process.env.PAYFAST_MERCHANT_KEY?.trim() ?? '',
