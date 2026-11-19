@@ -193,7 +193,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
     '/messages',
     {
       preHandler: [fastify.authenticate],
-      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+      // Per-user DM budget (shared with socket sends) is enforced in sendDirectMessage.
       schema: {
         body: {
           type: 'object',
