@@ -13,11 +13,8 @@ import { getPeerProfile } from '@/lib/profile-api';
 export default function PeerProfileScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const params = useLocalSearchParams<{ id: string; name?: string; initial?: string; online?: string }>();
+  const params = useLocalSearchParams<{ id: string }>();
   const userId = params.id ?? '';
-  const fallbackName = params.name ?? 'MiXiT user';
-  const initial = (params.initial ?? fallbackName.slice(0, 1)).slice(0, 1).toUpperCase();
-  const online = params.online === '1';
 
   const profileQuery = useQuery({
     queryKey: ['peer-profile', userId],
@@ -27,6 +24,10 @@ export default function PeerProfileScreen() {
   });
 
   const profile = profileQuery.data;
+  // Name and online status come from the API, not the URL.
+  const fallbackName = profileQuery.isLoading ? '' : 'MiXiT user';
+  const initial = (profile?.displayName ?? fallbackName).slice(0, 1).toUpperCase();
+  const online = profile?.online ?? false;
 
   const blockMutation = useMutation({
     mutationFn: () => blockUser(userId),

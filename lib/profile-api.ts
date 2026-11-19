@@ -98,6 +98,8 @@ export type PeerProfile = {
   voiceIntroUrl?: string | null;
   voiceIntroDurationSec?: number | null;
   lastActive?: string | null;
+  /** Server-computed; false when the user hides their last seen. */
+  online?: boolean;
 };
 
 export async function getPeerProfile(userId: string): Promise<PeerProfile | null> {

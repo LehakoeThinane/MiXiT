@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { prisma } from '../../shared/db/prisma.js';
 import { applyAutoHold, notifyModerators } from '../../shared/moderation/actions.js';
 import { forgetBlockedPair } from '../../shared/moderation/blocks.js';
+import { FALLBACK_DISPLAY_NAME } from '../../shared/users/public-identity.js';
 
 const REPORT_REASONS = ['inappropriate_content', 'harassment', 'fake_profile', 'spam', 'underage', 'other'];
 
@@ -53,7 +54,7 @@ const moderationRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get('/blocked', { preHandler: [fastify.authenticate] }, async (req) => {
     const blocks = await prisma.block.findMany({
       where: { blockerId: req.user.sub },
-      include: { blocked: { include: { profile: { select: { displayName: true } } } } },
+      include: { blocked: { select: { profile: { select: { displayName: true } } } } },
       orderBy: { createdAt: 'desc' },
     });
 
@@ -61,7 +62,7 @@ const moderationRoutes: FastifyPluginAsync = async (fastify) => {
       ok: true,
       blocked: blocks.map((block) => ({
         userId: block.blockedId,
-        name: block.blocked.profile?.displayName ?? block.blocked.email,
+        name: block.blocked.profile?.displayName || FALLBACK_DISPLAY_NAME,
         blockedAt: block.createdAt.toISOString(),
       })),
     };

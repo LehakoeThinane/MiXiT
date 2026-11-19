@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { env } from '../../shared/config/env.js';
 import { prisma } from '../../shared/db/prisma.js';
+import { describeDistance } from '../../shared/location/privacy.js';
 import { visibleUserFilter } from '../../shared/moderation/actions.js';
 import { getBlockedUserIds, isBlockedPair } from '../../shared/moderation/blocks.js';
 import { sendPushNotification } from '../../shared/push/expo-push.js';
@@ -10,25 +11,10 @@ import { sendPushNotification } from '../../shared/push/expo-push.js';
 // Scoring helpers
 // ---------------------------------------------------------------------------
 
-/** Haversine distance between two lat/lng points in kilometres. */
-function haversineKm(
-  lat1: number,
-  lng1: number,
-  lat2: number,
-  lng2: number
-): number {
-  const R = 6371; // Earth radius in km
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-/** Compute a human-readable distance string between two profiles. */
+/**
+ * Coarse distance label between two profiles — never metres (trilateration risk).
+ * See shared/location/privacy.ts.
+ */
 function computeDistance(
   myLat: number | null,
   myLng: number | null,
@@ -37,22 +23,7 @@ function computeDistance(
   theirLng: number | null,
   theirCity: string | null
 ): string {
-  if (
-    myLat !== null &&
-    myLng !== null &&
-    theirLat !== null &&
-    theirLng !== null
-  ) {
-    const km = haversineKm(myLat, myLng, theirLat, theirLng);
-    if (km < 1) return `${Math.round(km * 1000)}m away`;
-    return `${km.toFixed(1)}km away`;
-  }
-
-  if (myCity && theirCity && myCity.toLowerCase() === theirCity.toLowerCase()) {
-    return 'Same city';
-  }
-
-  return 'Nearby';
+  return describeDistance({ lat: myLat, lng: myLng, city: myCity }, { lat: theirLat, lng: theirLng, city: theirCity });
 }
 
 /** Parse a JSON column that may be a string[] or null. */
