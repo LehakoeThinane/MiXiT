@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { prisma } from '../../shared/db/prisma.js';
 import { sendDirectMessage, toClientMessages } from '../../shared/messaging/direct-messages.js';
-import { getBlockedUserIds } from '../../shared/moderation/blocks.js';
+import { listConversations } from '../../shared/messaging/conversations.js';
 import { getSocketServer } from '../../shared/realtime/socket.js';
 import { publicIdentity } from '../../shared/users/public-identity.js';
 import { createSignedChatMediaUrl } from '../../shared/storage/supabase-storage.js';
@@ -13,13 +13,6 @@ type SendMessageBody = {
   type?: 'text' | 'voice' | 'image';
   mediaUrl?: string;
 };
-
-function formatPreview(type: string, content: string | null) {
-  if (type === 'voice') return 'Voice note';
-  if (type === 'image') return 'Photo';
-  if (content && content.trim().length > 0) return content.trim();
-  return 'Start the conversation';
-}
 
 const peerSelect = {
   id: true,
@@ -59,59 +52,33 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 
-  fastify.get('/conversations', { preHandler: [fastify.authenticate] }, async (req) => {
-    const currentUserId = req.user.sub;
-    const blockedUserIds = await getBlockedUserIds(currentUserId);
-
-    const messages = await prisma.message.findMany({
-      where: {
-        OR: [{ senderId: currentUserId }, { recipientId: currentUserId }],
+  // One row per person, newest first; blocked/banned/held peers excluded.
+  // Next page: pass the last row's lastMessageAt + lastMessageId as before/beforeId.
+  fastify.get<{ Querystring: { limit?: number; before?: string; beforeId?: string } }>(
+    '/conversations',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        querystring: {
+          type: 'object',
+          properties: {
+            limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 },
+            before: { type: 'string', format: 'date-time' },
+            beforeId: { type: 'string', minLength: 1, maxLength: 36 },
+          },
+          dependencies: { before: ['beforeId'], beforeId: ['before'] },
+        },
       },
-      // Only what the list shows — never load (or risk returning) email/phone.
-      include: {
-        sender: { select: peerSelect },
-        recipient: { select: peerSelect },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: 200,
-    });
-
-    const unreadPeerIds = new Set(
-      messages.filter((m) => m.recipientId === currentUserId && !m.readAt).map((m) => m.senderId)
-    );
-
-    const seenPeerIds = new Set<string>();
-    const conversations: Array<{
-      id: string;
-      name: string;
-      initial: string;
-      preview: string;
-      lastMessageAt: string;
-      online: boolean;
-      unread: boolean;
-    }> = [];
-
-    for (const message of messages) {
-      const isMine = message.senderId === currentUserId;
-      const peer = isMine ? message.recipient : message.sender;
-      // Banned and held (under review) users are hidden, as everywhere else.
-      if (seenPeerIds.has(peer.id) || blockedUserIds.has(peer.id) || peer.bannedAt || peer.heldAt) continue;
-      seenPeerIds.add(peer.id);
-      const identity = publicIdentity(peer.id, peer.profile);
-
-      conversations.push({
-        id: peer.id,
-        name: identity.displayName,
-        initial: identity.initial,
-        preview: formatPreview(message.type, message.content),
-        lastMessageAt: message.createdAt.toISOString(),
-        online: identity.online,
-        unread: unreadPeerIds.has(peer.id),
+    },
+    async (req) => {
+      const { limit = 50, before, beforeId } = req.query;
+      const result = await listConversations(req.user.sub, {
+        limit,
+        cursor: before && beforeId ? { before: new Date(before), beforeId } : undefined,
       });
+      return { ok: true, ...result };
     }
-
-    return { ok: true, conversations };
-  });
+  );
 
   // Newest page first. Older pages: pass the oldest message you have as the cursor
   // (`before` = its createdAt, `beforeId` = its id). `id` breaks createdAt ties so

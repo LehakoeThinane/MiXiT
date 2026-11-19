@@ -8,6 +8,8 @@ export type ConversationSummary = {
   lastMessageAt: string;
   online: boolean;
   unread: boolean;
+  unreadCount?: number;
+  lastMessageId?: string;
 };
 
 export type ThreadMessage = {
@@ -24,6 +26,7 @@ export type ThreadMessage = {
 type ConversationsResponse = {
   ok: boolean;
   conversations: ConversationSummary[];
+  hasMore?: boolean;
 };
 
 type ThreadResponse = {
@@ -43,8 +46,13 @@ type SendMessageResponse = {
   message: ThreadMessage;
 };
 
+/**
+ * The chat list (newest first). Fetches the server's maximum page of 100 people,
+ * which covers almost everyone; a "load more" for longer lists is a follow-up
+ * (the API already supports it via before/beforeId).
+ */
 export async function getConversations() {
-  const response = await apiRequest<ConversationsResponse>('/messaging/conversations', { auth: true });
+  const response = await apiRequest<ConversationsResponse>('/messaging/conversations?limit=100', { auth: true });
   return response.conversations;
 }
 
