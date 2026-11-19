@@ -28,7 +28,7 @@ import { initSocketServer, closeSocketServer } from './shared/realtime/socket.js
 export function buildApp() {
   const app = Fastify({
     logger: {
-      level: env.nodeEnv === 'production' ? 'info' : 'debug',
+      level: process.env.LOG_LEVEL || (env.nodeEnv === 'production' ? 'info' : 'debug'),
     },
     bodyLimit: 1 * 1024 * 1024, // 1 MB — photos upload directly to Supabase Storage
     requestTimeout: 30_000,
