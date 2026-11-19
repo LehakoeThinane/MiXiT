@@ -9,6 +9,7 @@ import { env } from '../../shared/config/env.js';
 import { logger } from '../../shared/utils/logger.js';
 import { revokeAppleAuthorization, verifyAppleIdentityToken } from '../../shared/auth/apple.js';
 import { hashToken, signAccessToken, signRefreshToken, verifyRefreshToken } from '../../shared/auth/jwt.js';
+import { clientIp } from '../../shared/http/client-ip.js';
 import { invalidateProfileCache } from '../../shared/cache/profile-cache.js';
 import { resolveReferrer } from '../../shared/referrals/referrals.js';
 import { deleteUserStorage } from '../../shared/storage/supabase-storage.js';
@@ -196,7 +197,7 @@ async function issueTokens(userId: string, email: string, req: FastifyRequest) {
       userId,
       tokenHash: hashToken(refreshToken),
       userAgent: req.headers['user-agent'] ?? null,
-      ipAddress: req.ip ?? null,
+      ipAddress: clientIp(req),
       expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
     },
   });
@@ -452,7 +453,7 @@ const authRoutes: FastifyPluginAsync = async (fastify) => {
             userId: user.id,
             tokenHash: hashToken(refreshToken),
             userAgent: req.headers['user-agent'] ?? null,
-            ipAddress: req.ip ?? null,
+            ipAddress: clientIp(req),
             expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
           },
         });

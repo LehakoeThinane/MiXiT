@@ -18,6 +18,7 @@ import profileRoutes from './modules/profiles/routes.js';
 import roomsRoutes from './modules/rooms/routes.js';
 import type { RateLimitPluginOptions } from '@fastify/rate-limit';
 import { extractBearerToken, verifyAccessToken } from './shared/auth/jwt.js';
+import { rateLimitKey } from './shared/http/client-ip.js';
 import { env } from './shared/config/env.js';
 import { redis } from './shared/cache/redis.js';
 import { prisma } from './shared/db/prisma.js';
@@ -45,12 +46,19 @@ export function buildApp() {
     global: true,
     max: 200,
     timeWindow: 60_000,
-    redis, // shared store — without this, limits are per-process and become meaningless
-           // (effectively N× looser) the moment this runs as more than one instance
+    // By user for authenticated requests, otherwise by real client IP (see client-ip.ts).
+    keyGenerator: rateLimitKey,
+    // Shared Redis store when REDIS_URL is set; without it, an in-memory store. (Before,
+    // an unset REDIS_URL pointed the limiter at a non-existent localhost Redis and, with
+    // skipOnError, silently disabled every limit.)
+    ...(env.redisUrl ? { redis } : {}),
     skipOnError: true, // Redis outage degrades to unlimited rather than blocking all traffic —
                         // same fail-open posture as this app's other Redis usage (profile cache,
-                        // Socket.IO adapter)
+                        // Socket.IO adapter). Tracked as brief item 2.5.
+    // The plugin THROWS this object, so it must carry statusCode — without it every
+    // rate-limited request became a 500 instead of a 429.
     errorResponseBuilder: (_req, context) => ({
+      statusCode: 429,
       ok: false,
       message: `Too many requests — try again in ${Math.ceil((context.ttl ?? 60_000) / 1000)}s.`,
     }),
