@@ -38,6 +38,9 @@ export async function toClientMessages(messages: Message[]): Promise<ClientMessa
   return messages.map((m) => serialize(m, m.mediaUrl ? signed.get(m.mediaUrl) ?? m.mediaUrl : null));
 }
 
+export const HELD_SENDER_MESSAGE =
+  'Your account is under review. You can send messages again once it has been checked.';
+
 export const RATE_LIMITED_MESSAGE = 'You are sending messages too quickly — slow down a little.';
 
 export type SendDirectMessageInput = {
@@ -81,11 +84,17 @@ export async function sendDirectMessage(
     return { ok: false, status: 429, message: RATE_LIMITED_MESSAGE };
   }
 
-  const recipient = await prisma.user.findUnique({
-    where: { id: recipientId },
-    select: { id: true, bannedAt: true, heldAt: true },
-  });
-  if (!recipient || recipient.bannedAt) return { ok: false, status: 404, message: 'Recipient not found' };
+  const [sender, recipient] = await Promise.all([
+    prisma.user.findUnique({ where: { id: senderId }, select: { heldAt: true } }),
+    prisma.user.findUnique({ where: { id: recipientId }, select: { id: true, bannedAt: true, heldAt: true } }),
+  ]);
+  // Held accounts (e.g. reported as underage) are under review: they can't send
+  // DMs, and DMs to them are rejected exactly like DMs to a banned account
+  // (owner decision, readiness brief §11 Q6) — matching the room-posting rule.
+  if (sender?.heldAt) return { ok: false, status: 403, message: HELD_SENDER_MESSAGE };
+  if (!recipient || recipient.bannedAt || recipient.heldAt) {
+    return { ok: false, status: 404, message: 'Recipient not found' };
+  }
   if (await isBlockedPair(senderId, recipientId)) {
     return { ok: false, status: 403, message: 'Cannot message this user' };
   }
