@@ -21,6 +21,7 @@ export default defineConfig({
       NODE_ENV: 'test',
       REDIS_URL: '',
       LOG_LEVEL: 'silent',
+      CLIENT_IP_HEADER: 'fly-client-ip',
     },
   },
 });
