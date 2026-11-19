@@ -24,6 +24,7 @@ function formatPreview(type: string, content: string | null) {
 const peerSelect = {
   id: true,
   bannedAt: true,
+  heldAt: true,
   profile: { select: { displayName: true, lastActive: true, showLastSeen: true } },
 } as const;
 
@@ -93,7 +94,8 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
     for (const message of messages) {
       const isMine = message.senderId === currentUserId;
       const peer = isMine ? message.recipient : message.sender;
-      if (seenPeerIds.has(peer.id) || blockedUserIds.has(peer.id) || peer.bannedAt) continue;
+      // Banned and held (under review) users are hidden, as everywhere else.
+      if (seenPeerIds.has(peer.id) || blockedUserIds.has(peer.id) || peer.bannedAt || peer.heldAt) continue;
       seenPeerIds.add(peer.id);
       const identity = publicIdentity(peer.id, peer.profile);
 
@@ -185,7 +187,7 @@ const messagingRoutes: FastifyPluginAsync = async (fastify) => {
 
     // Who the chat is with, so the app never needs names in the URL.
     const peer = await prisma.user.findUnique({ where: { id: peerUserId }, select: peerSelect });
-    const peerIdentity = publicIdentity(peerUserId, peer && !peer.bannedAt ? peer.profile : null);
+    const peerIdentity = publicIdentity(peerUserId, peer && !peer.bannedAt && !peer.heldAt ? peer.profile : null);
 
     return { ok: true, messages: await toClientMessages(messages), hasMore, peer: peerIdentity };
     }
