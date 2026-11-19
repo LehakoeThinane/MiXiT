@@ -7,12 +7,46 @@ import { extractBearerToken, verifyAccessToken } from '../auth/jwt.js';
 import { env } from '../config/env.js';
 import { prisma } from '../db/prisma.js';
 import { isUserBanned } from '../moderation/actions.js';
-import { sendDirectMessage } from '../messaging/direct-messages.js';
+import { sendDirectMessage, type SendDirectMessageInput } from '../messaging/direct-messages.js';
+import { isBlockedPairCached } from '../moderation/blocks.js';
+import { BUDGETS, consumeUserBudget } from '../rate-limit/user-budget.js';
 import { logger } from '../utils/logger.js';
 
 let io: Server | null = null;
 let adapterPub: Redis | null = null;
 let adapterSub: Redis | null = null;
+
+// ---------------------------------------------------------------------------
+// Payload guards — socket events are untrusted input with no schema validation
+// from Fastify, so anything that doesn't match is ignored.
+// ---------------------------------------------------------------------------
+
+const MESSAGE_TYPES = new Set(['text', 'voice', 'image']);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const isBoundedString = (value: unknown, max: number): value is string =>
+  typeof value === 'string' && value.length > 0 && value.length <= max;
+
+export function parseId(payload: unknown, field: string): string | null {
+  if (!isRecord(payload)) return null;
+  const value = payload[field];
+  return isBoundedString(value, 36) ? value : null;
+}
+
+export function parseMessageSend(payload: unknown): SendDirectMessageInput | null {
+  if (!isRecord(payload)) return null;
+  const { recipientId, content, type, mediaUrl } = payload;
+  if (!isBoundedString(recipientId, 36)) return null;
+  if (content !== undefined && content !== null && (typeof content !== 'string' || content.length > 4000)) return null;
+  if (type !== undefined && (typeof type !== 'string' || !MESSAGE_TYPES.has(type))) return null;
+  if (mediaUrl !== undefined && mediaUrl !== null && !isBoundedString(mediaUrl, 2000)) return null;
+  return {
+    recipientId,
+    content: (content as string | null | undefined) ?? undefined,
+    type: type as string | undefined,
+    mediaUrl: (mediaUrl as string | null | undefined) ?? undefined,
+  };
+}
 
 function resolveTokenFromHandshake(authHeader: string | string[] | undefined, authToken?: unknown) {
   if (typeof authToken === 'string' && authToken.trim()) return authToken.trim();
@@ -69,32 +103,18 @@ export async function initSocketServer(app: FastifyInstance) {
     }
   });
 
-  io.on('connection', async (socket) => {
+  io.on('connection', (socket) => {
     const userId = socket.data.userId as string;
     socket.join(`user:${userId}`);
 
-    // Auto-join all room channels the user is a member of
-    try {
-      const memberships = await prisma.roomMembership.findMany({
-        where: { userId },
-        select: { roomId: true },
-      });
-      for (const { roomId } of memberships) {
-        socket.join(`room:${roomId}`);
-      }
-    } catch {
-      // non-fatal — user can still chat in rooms they navigate to
-    }
-
-    await prisma.profile.updateMany({
-      where: { userId },
-      data: { lastActive: new Date() },
-    });
-
-    socket.on('message:send', async (payload: { recipientId: string; content?: string; type?: string; mediaUrl?: string }) => {
-      if (!payload?.recipientId) return;
+    // Register every handler synchronously, BEFORE any await: events a client
+    // emits right after connecting would otherwise arrive with no listener and be
+    // silently dropped.
+    socket.on('message:send', async (payload: unknown) => {
+      const input = parseMessageSend(payload);
+      if (!input) return;
       try {
-        const result = await sendDirectMessage(userId, payload);
+        const result = await sendDirectMessage(userId, input);
         if (result.ok) socket.emit('message:delivered', { messageId: result.message.id });
         else socket.emit('message:error', { message: result.message });
       } catch (error) {
@@ -102,22 +122,43 @@ export async function initSocketServer(app: FastifyInstance) {
       }
     });
 
-    socket.on('room:join', async ({ roomId }: { roomId: string }) => {
+    socket.on('room:join', async (payload: unknown) => {
+      const roomId = parseId(payload, 'roomId');
       if (!roomId) return;
-      const membership = await prisma.roomMembership.findUnique({
-        where: { roomId_userId: { roomId, userId } },
-      });
-      if (membership) socket.join(`room:${roomId}`);
+      try {
+        const membership = await prisma.roomMembership.findUnique({
+          where: { roomId_userId: { roomId, userId } },
+        });
+        if (membership) socket.join(`room:${roomId}`);
+      } catch (error) {
+        logger.warn('Socket room:join failed', { error: String(error) });
+      }
     });
 
-    socket.on('typing:start', ({ recipientId }: { recipientId: string }) => {
-      if (recipientId) io?.to(`user:${recipientId}`).emit('typing:start', { senderId: userId });
-    });
+    const relayTyping = (event: 'typing:start' | 'typing:stop') => async (payload: unknown) => {
+      const recipientId = parseId(payload, 'recipientId');
+      if (!recipientId || recipientId === userId) return;
+      try {
+        if (!(await consumeUserBudget(BUDGETS.typing, userId))) return;
+        if (await isBlockedPairCached(userId, recipientId)) return;
+        io?.to(`user:${recipientId}`).emit(event, { senderId: userId });
+      } catch (error) {
+        logger.warn(`Socket ${event} failed`, { error: String(error) });
+      }
+    };
+    socket.on('typing:start', relayTyping('typing:start'));
+    socket.on('typing:stop', relayTyping('typing:stop'));
 
-    socket.on('typing:stop', ({ recipientId }: { recipientId: string }) => {
-      if (recipientId) io?.to(`user:${recipientId}`).emit('typing:stop', { senderId: userId });
-    });
-
+    // Then the slower setup work — failures are non-fatal.
+    void (async () => {
+      try {
+        const memberships = await prisma.roomMembership.findMany({ where: { userId }, select: { roomId: true } });
+        for (const { roomId } of memberships) socket.join(`room:${roomId}`);
+        await prisma.profile.updateMany({ where: { userId }, data: { lastActive: new Date() } });
+      } catch (error) {
+        logger.warn('Socket connection setup failed', { error: String(error) });
+      }
+    })();
   });
 
   return io;

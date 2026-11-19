@@ -20,6 +20,29 @@ export async function startTestApp(): Promise<FastifyInstance> {
   return app;
 }
 
+/** Real HTTP server on a random port — for Socket.IO clients. */
+export async function startListeningApp(): Promise<{ app: FastifyInstance; url: string }> {
+  const app = buildApp();
+  await app.listen({ host: '127.0.0.1', port: 0 });
+  const address = app.server.address();
+  if (!address || typeof address === 'string') throw new Error('No server address');
+  return { app, url: `http://127.0.0.1:${address.port}` };
+}
+
+/** Polls until `check` passes or the timeout expires (then runs it once more to surface the failure). */
+export async function eventually(check: () => void, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      check();
+      return;
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
 export async function createTestUser(profile: { displayName?: string; city?: string } = {}): Promise<TestUser> {
   const email = `${crypto.randomUUID()}${TEST_EMAIL_DOMAIN}`;
   const user = await prisma.user.create({

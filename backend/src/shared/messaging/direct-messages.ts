@@ -4,6 +4,7 @@ import { prisma } from '../db/prisma.js';
 import { isBlockedPair } from '../moderation/blocks.js';
 import { checkText, FILTERED_MESSAGE } from '../moderation/content-filter.js';
 import { sendPushNotification } from '../push/expo-push.js';
+import { BUDGETS, consumeUserBudget } from '../rate-limit/user-budget.js';
 import { getSocketServer } from '../realtime/socket.js';
 import { isOwnChatMediaUrl, signChatMediaUrl, signChatMediaUrls } from '../storage/supabase-storage.js';
 
@@ -36,6 +37,8 @@ export async function toClientMessages(messages: Message[]): Promise<ClientMessa
   const signed = await signChatMediaUrls(messages.map((m) => m.mediaUrl));
   return messages.map((m) => serialize(m, m.mediaUrl ? signed.get(m.mediaUrl) ?? m.mediaUrl : null));
 }
+
+export const RATE_LIMITED_MESSAGE = 'You are sending messages too quickly — slow down a little.';
 
 export type SendDirectMessageInput = {
   recipientId: string;
@@ -72,6 +75,11 @@ export async function sendDirectMessage(
   }
   // Voice notes carry their duration in `content`; only filter real text.
   if (type === 'text' && !checkText(content).ok) return { ok: false, status: 422, message: FILTERED_MESSAGE };
+
+  // One budget for REST and socket sends together (this is the only send path).
+  if (!(await consumeUserBudget(BUDGETS.directMessages, senderId))) {
+    return { ok: false, status: 429, message: RATE_LIMITED_MESSAGE };
+  }
 
   const recipient = await prisma.user.findUnique({
     where: { id: recipientId },
